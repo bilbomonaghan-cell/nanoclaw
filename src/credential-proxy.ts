@@ -13,6 +13,7 @@
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
@@ -42,6 +43,8 @@ export function startCredentialProxy(
     secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
   );
   const isHttps = upstreamUrl.protocol === 'https:';
+  const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  const upstreamAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
   const makeRequest = isHttps ? httpsRequest : httpRequest;
 
   return new Promise((resolve, reject) => {
@@ -86,6 +89,7 @@ export function startCredentialProxy(
             path: req.url,
             method: req.method,
             headers,
+            ...(upstreamAgent ? { agent: upstreamAgent } : {}),
           } as RequestOptions,
           (upRes) => {
             res.writeHead(upRes.statusCode!, upRes.headers);

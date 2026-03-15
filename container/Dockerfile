@@ -3,8 +3,25 @@
 
 FROM node:22-slim
 
+# Accept proxy build args (for Docker Sandbox MITM proxy)
+ARG http_proxy
+ARG https_proxy
+ARG no_proxy
+ARG NODE_EXTRA_CA_CERTS
+ARG npm_config_strict_ssl=true
+ENV http_proxy=${http_proxy} \
+    https_proxy=${https_proxy} \
+    no_proxy=${no_proxy} \
+    NODE_EXTRA_CA_CERTS=${NODE_EXTRA_CA_CERTS}
+RUN npm config set strict-ssl ${npm_config_strict_ssl}
+
+# Install CA cert for proxy trust (Docker Sandbox MITM), then system deps
+COPY --chown=root:root proxy-ca.crt /usr/local/share/ca-certificates/proxy-ca.crt
+RUN echo 'Acquire::Check-Date "false";' > /etc/apt/apt.conf.d/99no-check-date && \
+    apt-get update && apt-get install -y ca-certificates && update-ca-certificates
+
 # Install system dependencies for Chromium
-RUN apt-get update && apt-get install -y \
+RUN apt-get install -y \
     chromium \
     fonts-liberation \
     fonts-noto-cjk \
@@ -41,6 +58,7 @@ COPY agent-runner/package*.json ./
 
 # Install dependencies
 RUN npm install
+RUN npm config set strict-ssl true
 
 # Copy source code
 COPY agent-runner/ ./

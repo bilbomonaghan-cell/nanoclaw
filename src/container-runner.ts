@@ -78,10 +78,13 @@ function buildVolumeMounts(
 
     // Shadow .env so the agent cannot read secrets from the mounted project root.
     // Credentials are injected by the credential proxy, never exposed to containers.
+    // Docker Sandbox rejects /dev/null bind mounts — use an empty file instead.
     const envFile = path.join(projectRoot, '.env');
     if (fs.existsSync(envFile)) {
+      const emptyEnvPath = path.join(DATA_DIR, 'empty-env');
+      if (!fs.existsSync(emptyEnvPath)) fs.writeFileSync(emptyEnvPath, '');
       mounts.push({
-        hostPath: '/dev/null',
+        hostPath: emptyEnvPath,
         containerPath: '/workspace/project/.env',
         readonly: true,
       });
@@ -220,6 +223,22 @@ function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Forward sandbox proxy env vars so containers can reach the internet
+  const proxyVars = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy'];
+  for (const v of proxyVars) {
+    if (process.env[v]) args.push('-e', `${v}=${process.env[v]}`);
+  }
+
+  // Mount proxy CA cert if present (Docker Sandbox MITM cert)
+  const caCertSrc = process.env.NODE_EXTRA_CA_CERTS || process.env.SSL_CERT_FILE;
+  if (caCertSrc && fs.existsSync(caCertSrc)) {
+    const certDir = path.join(DATA_DIR, 'ca-cert');
+    fs.mkdirSync(certDir, { recursive: true });
+    fs.copyFileSync(caCertSrc, path.join(certDir, 'proxy-ca.crt'));
+    args.push('-v', `${certDir}:/workspace/ca-cert:ro`);
+    args.push('-e', 'NODE_EXTRA_CA_CERTS=/workspace/ca-cert/proxy-ca.crt');
+  }
 
   // Route API traffic through the credential proxy (containers never see real secrets)
   args.push(

@@ -107,7 +107,9 @@ export function cleanupOrphans(): void {
       `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
-    const orphans = output.trim().split('\n').filter(Boolean);
+    // Filter out current hostname to prevent self-termination in Docker Sandbox
+    const hostname = os.hostname();
+    const orphans = output.trim().split('\n').filter((n) => Boolean(n) && !n.includes(hostname));
     for (const name of orphans) {
       try {
         execSync(stopContainer(name), { stdio: 'pipe' });
