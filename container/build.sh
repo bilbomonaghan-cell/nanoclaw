@@ -13,6 +13,13 @@ CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 echo "Building NanoClaw agent container image..."
 echo "Image: ${IMAGE_NAME}:${TAG}"
 
+# Create placeholder cert if not present (required by Dockerfile COPY step)
+# Replace with a real cert when using Docker Sandbox MITM proxy mode
+if [ ! -f proxy-ca.crt ]; then
+  echo "Creating placeholder proxy-ca.crt (not using Docker Sandbox mode)"
+  touch proxy-ca.crt
+fi
+
 ${CONTAINER_RUNTIME} build \
   --build-arg http_proxy="${http_proxy:-$HTTP_PROXY}" \
   --build-arg https_proxy="${https_proxy:-$HTTPS_PROXY}" \
