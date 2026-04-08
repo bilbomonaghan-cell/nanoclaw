@@ -43,7 +43,11 @@ export function startCredentialProxy(
     secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
   );
   const isHttps = upstreamUrl.protocol === 'https:';
-  const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  const proxyUrl =
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy;
   const upstreamAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
   const makeRequest = isHttps ? httpsRequest : httpRequest;
 

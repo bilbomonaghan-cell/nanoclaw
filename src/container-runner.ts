@@ -225,13 +225,21 @@ function buildContainerArgs(
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Forward sandbox proxy env vars so containers can reach the internet
-  const proxyVars = ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy'];
+  const proxyVars = [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'NO_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'no_proxy',
+  ];
   for (const v of proxyVars) {
     if (process.env[v]) args.push('-e', `${v}=${process.env[v]}`);
   }
 
   // Mount proxy CA cert if present (Docker Sandbox MITM cert)
-  const caCertSrc = process.env.NODE_EXTRA_CA_CERTS || process.env.SSL_CERT_FILE;
+  const caCertSrc =
+    process.env.NODE_EXTRA_CA_CERTS || process.env.SSL_CERT_FILE;
   if (caCertSrc && fs.existsSync(caCertSrc)) {
     const certDir = path.join(DATA_DIR, 'ca-cert');
     fs.mkdirSync(certDir, { recursive: true });
