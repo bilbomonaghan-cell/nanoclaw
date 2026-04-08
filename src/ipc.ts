@@ -158,6 +158,7 @@ export async function processTaskIpc(
     type: string;
     taskId?: string;
     prompt?: string;
+    script?: string;
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
@@ -259,6 +260,7 @@ export async function processTaskIpc(
           group_folder: targetFolder,
           chat_jid: targetJid,
           prompt: data.prompt,
+          script: data.script || null,
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,

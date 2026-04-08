@@ -1,4 +1,4 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, exec } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
@@ -20,6 +20,73 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
+
+const SCRIPT_TIMEOUT_MS = 30_000;
+
+export interface ScriptResult {
+  wakeAgent: boolean;
+  data?: unknown;
+}
+
+/**
+ * Run a task's pre-flight script on the host.
+ * Returns { wakeAgent: true/false, data } parsed from stdout JSON.
+ * On error, defaults to wakeAgent: true so the task still runs.
+ */
+export async function runScript(
+  script: string,
+  taskId: string,
+): Promise<ScriptResult> {
+  return new Promise((resolve) => {
+    exec(
+      script,
+      { timeout: SCRIPT_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          logger.warn(
+            { taskId, error: err.message, stderr },
+            'Task pre-flight script failed — running agent anyway',
+          );
+          resolve({ wakeAgent: true });
+          return;
+        }
+
+        const output = stdout.trim();
+        if (!output) {
+          logger.warn(
+            { taskId },
+            'Task pre-flight script produced no output — running agent anyway',
+          );
+          resolve({ wakeAgent: true });
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(output) as ScriptResult;
+          if (typeof parsed.wakeAgent !== 'boolean') {
+            logger.warn(
+              { taskId, output },
+              'Script output missing wakeAgent boolean — running agent anyway',
+            );
+            resolve({ wakeAgent: true });
+            return;
+          }
+          logger.info(
+            { taskId, wakeAgent: parsed.wakeAgent },
+            'Task pre-flight script result',
+          );
+          resolve(parsed);
+        } catch {
+          logger.warn(
+            { taskId, output },
+            'Failed to parse script output as JSON — running agent anyway',
+          );
+          resolve({ wakeAgent: true });
+        }
+      },
+    );
+  });
+}
 
 /**
  * Compute the next run time for a recurring task, anchored to the
@@ -148,6 +215,42 @@ async function runTask(
 
   let result: string | null = null;
   let error: string | null = null;
+
+  // Run the pre-flight script (if any) before spinning up a container.
+  // If the script returns wakeAgent: false, skip the container run entirely.
+  if (task.script) {
+    const scriptResult = await runScript(task.script, task.id);
+    if (!scriptResult.wakeAgent) {
+      logger.info(
+        { taskId: task.id, group: task.group_folder },
+        'Task pre-flight script returned wakeAgent: false — skipping agent run',
+      );
+      const nextRun = computeNextRun(task);
+      updateTaskAfterRun(task.id, nextRun, 'Script: skipped (wakeAgent=false)');
+      logTaskRun({
+        task_id: task.id,
+        run_at: new Date().toISOString(),
+        duration_ms: Date.now() - startTime,
+        status: 'success',
+        result: 'Skipped by pre-flight script',
+        error: null,
+      });
+      return;
+    }
+
+    // Append script data to prompt so the agent has context
+    if (scriptResult.data !== undefined) {
+      const dataJson = JSON.stringify(scriptResult.data, null, 2);
+      task = {
+        ...task,
+        prompt: `${task.prompt}\n\n[Pre-flight script data]\n\`\`\`json\n${dataJson}\n\`\`\``,
+      };
+      logger.debug(
+        { taskId: task.id, dataSize: dataJson.length },
+        'Appended script data to task prompt',
+      );
+    }
+  }
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();

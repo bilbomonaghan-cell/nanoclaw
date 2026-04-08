@@ -91,6 +91,15 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
+    script: z.string().optional().describe(`Optional bash script that runs BEFORE the agent. Must print JSON to stdout: {"wakeAgent": true/false, "data": {...}}. If wakeAgent is false, the agent is skipped and the task waits for its next run — saving API credits. The data object is serialized and appended to the prompt when the agent does run.
+
+Always test your script first with: bash -c '...'
+
+Example — only wake agent if there are open PRs:
+\`\`\`bash
+prs=$(curl -s "https://api.github.com/repos/owner/repo/pulls?state=open" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); process.stdout.write(JSON.stringify({wakeAgent:d.length>0,data:{count:d.length,titles:d.slice(0,3).map(p=>p.title)}}))")
+echo "$prs"
+\`\`\``),
   },
   async (args) => {
     // Validate schedule_value before writing IPC
@@ -132,7 +141,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 
     const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    const data = {
+    const data: Record<string, string | undefined> = {
       type: 'schedule_task',
       taskId,
       prompt: args.prompt,
@@ -143,6 +152,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       createdBy: groupFolder,
       timestamp: new Date().toISOString(),
     };
+    if (args.script) data.script = args.script;
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -330,6 +340,259 @@ Use available_groups.json to find the JID for a group. The folder name must be c
     return {
       content: [{ type: 'text' as const, text: `Group "${args.name}" registered. It will start receiving messages immediately.` }],
     };
+  },
+);
+
+// ─── Structured Memory Tools ─────────────────────────────────────────────────
+
+const MEMORY_FILE = '/workspace/group/memory.json';
+
+interface MemoryEntry {
+  content: string;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+interface MemoryStore {
+  version: number;
+  memories: Record<string, MemoryEntry>;
+}
+
+function readMemoryStore(): MemoryStore {
+  try {
+    if (fs.existsSync(MEMORY_FILE)) {
+      return JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf-8')) as MemoryStore;
+    }
+  } catch { /* ignore parse errors */ }
+  return { version: 1, memories: {} };
+}
+
+function writeMemoryStore(store: MemoryStore): void {
+  const tempPath = `${MEMORY_FILE}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(store, null, 2));
+  fs.renameSync(tempPath, MEMORY_FILE);
+}
+
+server.tool(
+  'memory_store',
+  `Store or update a structured memory entry. Each memory has a unique key, text content, and optional tags for later retrieval. Use this to remember facts, preferences, notes, or any information that should persist across sessions.
+
+Examples:
+- key: "user_prefs", content: "Berfday prefers brief responses and metric units", tags: ["preferences", "user"]
+- key: "project_status", content: "Working on nanoclaw Ollama integration", tags: ["projects", "nanoclaw"]`,
+  {
+    key: z.string().describe('Unique identifier for this memory (e.g., "user_prefs", "todo_list")'),
+    content: z.string().describe('The text content to store'),
+    tags: z.array(z.string()).optional().describe('Optional tags for categorization and search (e.g., ["preferences", "user"])'),
+  },
+  async (args) => {
+    const store = readMemoryStore();
+    const now = new Date().toISOString();
+    const existing = store.memories[args.key];
+
+    store.memories[args.key] = {
+      content: args.content,
+      tags: args.tags || [],
+      created_at: existing?.created_at || now,
+      updated_at: now,
+    };
+
+    writeMemoryStore(store);
+    return { content: [{ type: 'text' as const, text: `Memory "${args.key}" stored (${Object.keys(store.memories).length} total entries).` }] };
+  },
+);
+
+server.tool(
+  'memory_search',
+  'Search stored memories by content substring and/or tags. Returns all matching entries.',
+  {
+    query: z.string().optional().describe('Case-insensitive substring to search in memory content'),
+    tags: z.array(z.string()).optional().describe('Filter to memories that have ALL of these tags'),
+  },
+  async (args) => {
+    const store = readMemoryStore();
+    const entries = Object.entries(store.memories);
+
+    if (entries.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No memories stored yet.' }] };
+    }
+
+    const results = entries.filter(([, entry]) => {
+      if (args.query && !entry.content.toLowerCase().includes(args.query.toLowerCase())) return false;
+      if (args.tags && args.tags.length > 0) {
+        if (!args.tags.every(t => entry.tags.includes(t))) return false;
+      }
+      return true;
+    });
+
+    if (results.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No memories match that search.' }] };
+    }
+
+    const formatted = results.map(([key, entry]) =>
+      `**${key}** [${entry.tags.join(', ') || 'no tags'}]\n${entry.content}\n_(updated: ${entry.updated_at.slice(0, 10)})_`
+    ).join('\n\n');
+
+    return { content: [{ type: 'text' as const, text: `Found ${results.length} memor${results.length === 1 ? 'y' : 'ies'}:\n\n${formatted}` }] };
+  },
+);
+
+server.tool(
+  'memory_list',
+  'List all stored memory keys with their tags and a content preview.',
+  {
+    tags: z.array(z.string()).optional().describe('Optional: filter to memories that have ALL of these tags'),
+  },
+  async (args) => {
+    const store = readMemoryStore();
+    const entries = Object.entries(store.memories);
+
+    if (entries.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No memories stored yet.' }] };
+    }
+
+    const filtered = args.tags && args.tags.length > 0
+      ? entries.filter(([, e]) => args.tags!.every(t => e.tags.includes(t)))
+      : entries;
+
+    if (filtered.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No memories match those tags.' }] };
+    }
+
+    const lines = filtered.map(([key, entry]) => {
+      const preview = entry.content.length > 80 ? entry.content.slice(0, 80) + '…' : entry.content;
+      const tagsStr = entry.tags.length > 0 ? ` [${entry.tags.join(', ')}]` : '';
+      return `• **${key}**${tagsStr}: ${preview}`;
+    });
+
+    return { content: [{ type: 'text' as const, text: `${filtered.length} memor${filtered.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n')}` }] };
+  },
+);
+
+server.tool(
+  'memory_delete',
+  'Delete a stored memory entry by key.',
+  {
+    key: z.string().describe('The memory key to delete'),
+  },
+  async (args) => {
+    const store = readMemoryStore();
+
+    if (!store.memories[args.key]) {
+      return { content: [{ type: 'text' as const, text: `No memory found with key "${args.key}".` }] };
+    }
+
+    delete store.memories[args.key];
+    writeMemoryStore(store);
+    return { content: [{ type: 'text' as const, text: `Memory "${args.key}" deleted.` }] };
+  },
+);
+
+// ─── Ollama Tools ─────────────────────────────────────────────────────────────
+
+const OLLAMA_BASE = 'http://host.docker.internal:11434';
+
+server.tool(
+  'ollama_generate',
+  `Generate a completion using a local Ollama model. Use this for lightweight tasks to save API credits — classification, summarization, simple Q&A, content filtering, etc.
+
+Common models (use ollama_list_models to see what's installed):
+- llama3.2 / llama3.1 — general purpose
+- mistral / mistral-nemo — efficient general purpose
+- phi3 / phi3.5 — small, fast
+- gemma2 — good at reasoning
+- nomic-embed-text — embeddings only`,
+  {
+    model: z.string().describe('Model name (e.g., "llama3.2", "mistral", "phi3")'),
+    prompt: z.string().describe('The prompt to send to the model'),
+    system: z.string().optional().describe('Optional system prompt'),
+    temperature: z.number().optional().describe('Temperature 0-2 (default: 0.7)'),
+  },
+  async (args) => {
+    try {
+      const body: Record<string, unknown> = {
+        model: args.model,
+        prompt: args.prompt,
+        stream: false,
+        options: {} as Record<string, unknown>,
+      };
+      if (args.system) body.system = args.system;
+      if (args.temperature !== undefined) (body.options as Record<string, unknown>).temperature = args.temperature;
+
+      const response = await fetch(`${OLLAMA_BASE}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(120_000),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        return {
+          content: [{ type: 'text' as const, text: `Ollama error ${response.status}: ${errText}` }],
+          isError: true,
+        };
+      }
+
+      const result = await response.json() as { response: string; done: boolean; total_duration?: number };
+      const durationSec = result.total_duration ? (result.total_duration / 1e9).toFixed(1) : null;
+      const footer = durationSec ? `\n\n_(${args.model}, ${durationSec}s)_` : '';
+
+      return { content: [{ type: 'text' as const, text: result.response + footer }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const hint = msg.includes('ECONNREFUSED') || msg.includes('fetch failed')
+        ? ' — Is Ollama running on the host? Check with: curl http://host.docker.internal:11434/api/tags'
+        : '';
+      return {
+        content: [{ type: 'text' as const, text: `Failed to reach Ollama: ${msg}${hint}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'ollama_list_models',
+  'List all locally available Ollama models on the host machine.',
+  {},
+  async () => {
+    try {
+      const response = await fetch(`${OLLAMA_BASE}/api/tags`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!response.ok) {
+        return {
+          content: [{ type: 'text' as const, text: `Ollama returned ${response.status}. Is Ollama running?` }],
+          isError: true,
+        };
+      }
+
+      const data = await response.json() as { models: Array<{ name: string; size: number; modified_at: string }> };
+
+      if (!data.models || data.models.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'Ollama is running but no models are installed. Run: ollama pull llama3.2' }] };
+      }
+
+      const lines = data.models.map(m => {
+        const sizeGB = (m.size / 1e9).toFixed(1);
+        const date = m.modified_at.slice(0, 10);
+        return `• ${m.name} (${sizeGB} GB, updated ${date})`;
+      });
+
+      return { content: [{ type: 'text' as const, text: `${data.models.length} model${data.models.length === 1 ? '' : 's'} available:\n\n${lines.join('\n')}` }] };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const hint = msg.includes('ECONNREFUSED') || msg.includes('fetch failed')
+        ? '\n\nOllama does not appear to be running on the host. Start it with: ollama serve'
+        : '';
+      return {
+        content: [{ type: 'text' as const, text: `Failed to reach Ollama: ${msg}${hint}` }],
+        isError: true,
+      };
+    }
   },
 );
 
