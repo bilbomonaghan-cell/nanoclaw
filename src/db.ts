@@ -420,7 +420,13 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+      | 'prompt'
+      | 'schedule_type'
+      | 'schedule_value'
+      | 'next_run'
+      | 'status'
+      | 'script'
+      | 'context_mode'
     >
   >,
 ): void {
@@ -446,6 +452,14 @@ export function updateTask(
   if (updates.status !== undefined) {
     fields.push('status = ?');
     values.push(updates.status);
+  }
+  if (updates.script !== undefined) {
+    fields.push('script = ?');
+    values.push(updates.script ?? null);
+  }
+  if (updates.context_mode !== undefined) {
+    fields.push('context_mode = ?');
+    values.push(updates.context_mode);
   }
 
   if (fields.length === 0) return;

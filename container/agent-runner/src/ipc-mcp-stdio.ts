@@ -265,6 +265,8 @@ server.tool(
     prompt: z.string().optional().describe('New prompt for the task'),
     schedule_type: z.enum(['cron', 'interval', 'once']).optional().describe('New schedule type'),
     schedule_value: z.string().optional().describe('New schedule value (see schedule_task for format)'),
+    script: z.string().nullable().optional().describe('New pre-flight bash script, or null to remove an existing script'),
+    context_mode: z.enum(['group', 'isolated']).optional().describe('New context mode (group=with chat history, isolated=fresh session)'),
   },
   async (args) => {
     // Validate schedule_value if provided
@@ -290,7 +292,7 @@ server.tool(
       }
     }
 
-    const data: Record<string, string | undefined> = {
+    const data: Record<string, string | undefined | null> = {
       type: 'update_task',
       taskId: args.task_id,
       groupFolder,
@@ -300,6 +302,8 @@ server.tool(
     if (args.prompt !== undefined) data.prompt = args.prompt;
     if (args.schedule_type !== undefined) data.schedule_type = args.schedule_type;
     if (args.schedule_value !== undefined) data.schedule_value = args.schedule_value;
+    if (args.script !== undefined) data.script = args.script ?? '';   // empty string signals "clear script"
+    if (args.context_mode !== undefined) data.context_mode = args.context_mode;
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -486,6 +490,110 @@ server.tool(
     delete store.memories[args.key];
     writeMemoryStore(store);
     return { content: [{ type: 'text' as const, text: `Memory "${args.key}" deleted.` }] };
+  },
+);
+
+// ─── Health Check Tool ────────────────────────────────────────────────────────
+
+server.tool(
+  'health_check',
+  `Check the health of key system components from within the container. Returns a status report for:
+- Ollama (local LLM server at host.docker.internal:11434)
+- Workspace mounts (/workspace/group, /workspace/ipc, /workspace/project)
+- IPC directory writability
+- Memory file (if it exists)
+
+Use this to proactively check if anything looks degraded before starting work, or to diagnose issues.`,
+  {
+    components: z.array(z.enum(['ollama', 'mounts', 'ipc', 'memory'])).optional()
+      .describe('Specific components to check. Defaults to all components.'),
+  },
+  async (args) => {
+    const check = args.components ?? ['ollama', 'mounts', 'ipc', 'memory'];
+    const results: Array<{ name: string; status: 'ok' | 'warn' | 'error'; detail: string }> = [];
+
+    if (check.includes('ollama')) {
+      try {
+        const resp = await fetch('http://host.docker.internal:11434/api/tags', {
+          signal: AbortSignal.timeout(5_000),
+        });
+        if (resp.ok) {
+          const data = await resp.json() as { models?: Array<{ name: string }> };
+          const count = data.models?.length ?? 0;
+          results.push({
+            name: 'Ollama',
+            status: 'ok',
+            detail: `Running — ${count} model${count === 1 ? '' : 's'} installed${count > 0 ? ': ' + data.models!.slice(0, 3).map(m => m.name).join(', ') : ''}`,
+          });
+        } else {
+          results.push({ name: 'Ollama', status: 'warn', detail: `HTTP ${resp.status}` });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const hint = msg.includes('ECONNREFUSED') || msg.includes('fetch failed')
+          ? 'not running — start with: ollama serve'
+          : msg;
+        results.push({ name: 'Ollama', status: 'warn', detail: hint });
+      }
+    }
+
+    if (check.includes('mounts')) {
+      const mounts = [
+        { path: '/workspace/group', label: 'group folder' },
+        { path: '/workspace/ipc', label: 'IPC dir' },
+        { path: '/workspace/project', label: 'project (read-only)' },
+      ];
+      for (const mount of mounts) {
+        if (fs.existsSync(mount.path)) {
+          results.push({ name: `Mount: ${mount.label}`, status: 'ok', detail: mount.path });
+        } else {
+          results.push({ name: `Mount: ${mount.label}`, status: 'error', detail: `${mount.path} not found` });
+        }
+      }
+    }
+
+    if (check.includes('ipc')) {
+      try {
+        const testFile = path.join(IPC_DIR, `.health-${Date.now()}.tmp`);
+        fs.writeFileSync(testFile, 'ok');
+        fs.unlinkSync(testFile);
+        results.push({ name: 'IPC write', status: 'ok', detail: 'IPC directory is writable' });
+      } catch (err) {
+        results.push({
+          name: 'IPC write',
+          status: 'error',
+          detail: `Cannot write IPC dir: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
+    if (check.includes('memory')) {
+      if (!fs.existsSync(MEMORY_FILE)) {
+        results.push({ name: 'Memory file', status: 'ok', detail: 'Not yet created (will be created on first memory_store)' });
+      } else {
+        try {
+          const store = readMemoryStore();
+          const count = Object.keys(store.memories).length;
+          results.push({ name: 'Memory file', status: 'ok', detail: `${count} entr${count === 1 ? 'y' : 'ies'} stored` });
+        } catch (err) {
+          results.push({
+            name: 'Memory file',
+            status: 'error',
+            detail: `Parse error: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+      }
+    }
+
+    const icons: Record<string, string> = { ok: '✅', warn: '⚠️', error: '❌' };
+    const lines = results.map(r => `${icons[r.status]} **${r.name}**: ${r.detail}`);
+    const hasError = results.some(r => r.status === 'error');
+    const hasWarn = results.some(r => r.status === 'warn');
+    const summary = hasError ? '❌ Some components have errors' : hasWarn ? '⚠️ Some components need attention' : '✅ All systems operational';
+
+    return {
+      content: [{ type: 'text' as const, text: `${summary}\n\n${lines.join('\n')}` }],
+    };
   },
 );
 
