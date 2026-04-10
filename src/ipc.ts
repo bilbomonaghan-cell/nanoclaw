@@ -356,10 +356,11 @@ export async function processTaskIpc(
             | 'once';
         if (data.schedule_value !== undefined)
           updates.schedule_value = data.schedule_value;
-        if (data.script !== undefined)
-          updates.script = data.script || null;
-        if (data.context_mode !== undefined &&
-            (data.context_mode === 'group' || data.context_mode === 'isolated'))
+        if (data.script !== undefined) updates.script = data.script || null;
+        if (
+          data.context_mode !== undefined &&
+          (data.context_mode === 'group' || data.context_mode === 'isolated')
+        )
           updates.context_mode = data.context_mode;
 
         // Recompute next_run if schedule changed

@@ -186,15 +186,77 @@ server.tool(
 
       const formatted = tasks
         .map(
-          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; status: string; next_run: string }) =>
-            `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
+          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; context_mode?: string; script?: string; status: string; next_run: string; last_run?: string }) => {
+            const promptPreview = t.prompt.length > 60 ? t.prompt.slice(0, 60) + '…' : t.prompt;
+            const mode = t.context_mode || 'group';
+            const scriptFlag = t.script ? ' [script]' : '';
+            const next = t.next_run ? t.next_run.slice(0, 16).replace('T', ' ') : 'N/A';
+            return `- [${t.id}] ${promptPreview}\n  ${t.schedule_type}: ${t.schedule_value} | ${mode}${scriptFlag} | ${t.status} | next: ${next}`;
+          },
         )
         .join('\n');
 
-      return { content: [{ type: 'text' as const, text: `Scheduled tasks:\n${formatted}` }] };
+      return { content: [{ type: 'text' as const, text: `Scheduled tasks (${tasks.length}):\n\n${formatted}` }] };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  },
+);
+
+server.tool(
+  'get_task',
+  'Get full details for a specific scheduled task by ID, including its prompt, script, last result, and run history.',
+  {
+    task_id: z.string().describe('The task ID to look up'),
+  },
+  async (args) => {
+    const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
+
+    try {
+      if (!fs.existsSync(tasksFile)) {
+        return { content: [{ type: 'text' as const, text: 'No scheduled tasks found.' }] };
+      }
+
+      const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8'));
+      const task = allTasks.find((t: { id: string; groupFolder?: string }) =>
+        t.id === args.task_id && (isMain || t.groupFolder === groupFolder)
+      );
+
+      if (!task) {
+        return { content: [{ type: 'text' as const, text: `Task "${args.task_id}" not found.` }] };
+      }
+
+      const lines: string[] = [
+        `**Task: ${task.id}**`,
+        `Status: ${task.status}`,
+        `Schedule: ${task.schedule_type} — ${task.schedule_value}`,
+        `Context mode: ${task.context_mode || 'group'}`,
+        `Next run: ${task.next_run || 'N/A'}`,
+        `Last run: ${task.last_run || 'never'}`,
+        `Created: ${task.created_at || 'unknown'}`,
+        `Group: ${task.groupFolder || 'unknown'}`,
+        ``,
+        `**Prompt:**`,
+        task.prompt,
+      ];
+
+      if (task.script) {
+        lines.push(``, `**Pre-flight script:**`, `\`\`\`bash`, task.script, `\`\`\``);
+      }
+
+      if (task.last_result) {
+        const truncated = task.last_result.length > 500
+          ? task.last_result.slice(0, 500) + '…'
+          : task.last_result;
+        lines.push(``, `**Last result:**`, truncated);
+      }
+
+      return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error reading task: ${err instanceof Error ? err.message : String(err)}` }],
       };
     }
   },
@@ -490,6 +552,46 @@ server.tool(
     delete store.memories[args.key];
     writeMemoryStore(store);
     return { content: [{ type: 'text' as const, text: `Memory "${args.key}" deleted.` }] };
+  },
+);
+
+server.tool(
+  'memory_append',
+  `Append a line of text to an existing memory entry. Useful for list-style memories (todo lists, logs, running notes) where you want to add an item without rewriting the whole entry.
+
+If the key doesn't exist yet, it will be created with the appended text as the initial content.
+
+Examples:
+- key: "todo_list", text: "- Research Ollama streaming API"
+- key: "session_log", text: "Apr 10: Added memory_append tool"`,
+  {
+    key: z.string().describe('The memory key to append to'),
+    text: z.string().describe('Text to append as a new line'),
+    tags: z.array(z.string()).optional().describe('Tags to set if creating a new entry (ignored on existing entries)'),
+  },
+  async (args) => {
+    const store = readMemoryStore();
+    const now = new Date().toISOString();
+    const existing = store.memories[args.key];
+
+    if (existing) {
+      store.memories[args.key] = {
+        ...existing,
+        content: existing.content + '\n' + args.text,
+        updated_at: now,
+      };
+    } else {
+      store.memories[args.key] = {
+        content: args.text,
+        tags: args.tags || [],
+        created_at: now,
+        updated_at: now,
+      };
+    }
+
+    writeMemoryStore(store);
+    const action = existing ? 'appended to' : 'created';
+    return { content: [{ type: 'text' as const, text: `Memory "${args.key}" ${action}.` }] };
   },
 );
 
