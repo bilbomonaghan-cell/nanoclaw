@@ -48,7 +48,8 @@ export function startCredentialProxy(
     process.env.https_proxy ||
     process.env.HTTP_PROXY ||
     process.env.http_proxy;
-  const upstreamAgent = isHttps && proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
+  const upstreamAgent =
+    isHttps && proxyUrl ? new HttpsProxyAgent(proxyUrl) : undefined;
   const makeRequest = isHttps ? httpsRequest : httpRequest;
 
   return new Promise((resolve, reject) => {

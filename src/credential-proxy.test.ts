@@ -55,7 +55,15 @@ describe('credential-proxy', () => {
     // Unset container proxy env vars so http.request goes direct to the mock upstream.
     // NODE_USE_ENV_PROXY causes undici to route through the container proxy;
     // removing it AND setting no_proxy ensures 127.0.0.1 goes direct.
-    const proxyKeys = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NODE_USE_ENV_PROXY', 'NO_PROXY', 'no_proxy'];
+    const proxyKeys = [
+      'HTTPS_PROXY',
+      'https_proxy',
+      'HTTP_PROXY',
+      'http_proxy',
+      'NODE_USE_ENV_PROXY',
+      'NO_PROXY',
+      'no_proxy',
+    ];
     savedProxyEnv = {};
     for (const key of proxyKeys) {
       savedProxyEnv[key] = process.env[key];
