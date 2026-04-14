@@ -83,6 +83,7 @@ vi.mock('child_process', async () => {
         return new EventEmitter();
       },
     ),
+    execSync: vi.fn(() => ''),
   };
 });
 

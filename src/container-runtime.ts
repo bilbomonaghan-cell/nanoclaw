@@ -57,9 +57,12 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/** Returns the shell command to stop a container by name. */
-export function stopContainer(name: string): string {
-  return `${CONTAINER_RUNTIME_BIN} stop ${name}`;
+/** Stop a container by name. Validates name to prevent shell injection. */
+export function stopContainer(name: string): void {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(name)) {
+    throw new Error(`Invalid container name: ${name}`);
+  }
+  execSync(`${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`, { stdio: 'pipe' });
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
@@ -115,7 +118,7 @@ export function cleanupOrphans(): void {
       .filter((n) => Boolean(n) && !n.includes(hostname));
     for (const name of orphans) {
       try {
-        execSync(stopContainer(name), { stdio: 'pipe' });
+        stopContainer(name);
       } catch {
         /* already stopped */
       }

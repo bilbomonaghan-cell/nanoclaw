@@ -39,10 +39,20 @@ describe('readonlyMountArgs', () => {
 });
 
 describe('stopContainer', () => {
-  it('returns stop command using CONTAINER_RUNTIME_BIN', () => {
-    expect(stopContainer('nanoclaw-test-123')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop nanoclaw-test-123`,
+  it('calls execSync with stop command and -t 1 flag', () => {
+    mockExecSync.mockReturnValueOnce('');
+    stopContainer('nanoclaw-test-123');
+    expect(mockExecSync).toHaveBeenCalledWith(
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-test-123`,
+      { stdio: 'pipe' },
     );
+  });
+
+  it('throws on invalid container name', () => {
+    expect(() => stopContainer('bad name; rm -rf /')).toThrow(
+      'Invalid container name',
+    );
+    expect(mockExecSync).not.toHaveBeenCalled();
   });
 });
 
@@ -93,12 +103,12 @@ describe('cleanupOrphans', () => {
     expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
-      `${CONTAINER_RUNTIME_BIN} stop nanoclaw-group1-111`,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group1-111`,
       { stdio: 'pipe' },
     );
     expect(mockExecSync).toHaveBeenNthCalledWith(
       3,
-      `${CONTAINER_RUNTIME_BIN} stop nanoclaw-group2-222`,
+      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-group2-222`,
       { stdio: 'pipe' },
     );
     expect(logger.info).toHaveBeenCalledWith(

@@ -49,8 +49,21 @@ describe('credential-proxy', () => {
   let proxyPort: number;
   let upstreamPort: number;
   let lastUpstreamHeaders: http.IncomingHttpHeaders;
+  let savedProxyEnv: Record<string, string | undefined>;
 
   beforeEach(async () => {
+    // Unset container proxy env vars so http.request goes direct to the mock upstream.
+    // NODE_USE_ENV_PROXY causes undici to route through the container proxy;
+    // removing it AND setting no_proxy ensures 127.0.0.1 goes direct.
+    const proxyKeys = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NODE_USE_ENV_PROXY', 'NO_PROXY', 'no_proxy'];
+    savedProxyEnv = {};
+    for (const key of proxyKeys) {
+      savedProxyEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.no_proxy = '127.0.0.1,localhost';
+    process.env.NO_PROXY = '127.0.0.1,localhost';
+
     lastUpstreamHeaders = {};
 
     upstreamServer = http.createServer((req, res) => {
@@ -68,6 +81,14 @@ describe('credential-proxy', () => {
     await new Promise<void>((r) => proxyServer?.close(() => r()));
     await new Promise<void>((r) => upstreamServer?.close(() => r()));
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+    // Restore proxy env vars
+    for (const [key, value] of Object.entries(savedProxyEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
   });
 
   async function startProxy(env: Record<string, string>): Promise<number> {
