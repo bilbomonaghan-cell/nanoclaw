@@ -8,7 +8,10 @@ import {
   getAllRegisteredGroups,
   getMessagesSince,
   getNewMessages,
+  getRecentTaskRunLogs,
   getTaskById,
+  logTaskRun,
+  pruneTaskRunLogs,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -446,6 +449,112 @@ describe('message query LIMIT', () => {
       50,
     );
     expect(messages).toHaveLength(10);
+  });
+});
+
+// --- Task run logs ---
+
+function makeTask(id: string) {
+  createTask({
+    id,
+    group_folder: 'main',
+    chat_jid: 'group@g.us',
+    prompt: 'test task',
+    schedule_type: 'cron',
+    schedule_value: '0 9 * * *',
+    context_mode: 'isolated',
+    next_run: '2024-06-01T09:00:00.000Z',
+    status: 'active',
+    created_at: '2024-01-01T00:00:00.000Z',
+  });
+}
+
+describe('getRecentTaskRunLogs', () => {
+  it('returns empty array when no logs exist', () => {
+    makeTask('task-log-1');
+    const logs = getRecentTaskRunLogs('task-log-1');
+    expect(logs).toHaveLength(0);
+  });
+
+  it('returns logs in newest-first order', () => {
+    makeTask('task-log-2');
+
+    logTaskRun({ task_id: 'task-log-2', run_at: '2024-01-01T09:00:00.000Z', duration_ms: 1000, status: 'success', result: 'ok', error: null });
+    logTaskRun({ task_id: 'task-log-2', run_at: '2024-01-02T09:00:00.000Z', duration_ms: 1500, status: 'error', result: null, error: 'timeout' });
+    logTaskRun({ task_id: 'task-log-2', run_at: '2024-01-03T09:00:00.000Z', duration_ms: 900, status: 'success', result: 'done', error: null });
+
+    const logs = getRecentTaskRunLogs('task-log-2');
+    expect(logs).toHaveLength(3);
+    // Newest first
+    expect(logs[0].run_at).toBe('2024-01-03T09:00:00.000Z');
+    expect(logs[1].run_at).toBe('2024-01-02T09:00:00.000Z');
+    expect(logs[2].run_at).toBe('2024-01-01T09:00:00.000Z');
+  });
+
+  it('respects the limit parameter', () => {
+    makeTask('task-log-3');
+
+    for (let i = 1; i <= 8; i++) {
+      logTaskRun({
+        task_id: 'task-log-3',
+        run_at: `2024-01-${String(i).padStart(2, '0')}T09:00:00.000Z`,
+        duration_ms: 1000,
+        status: 'success',
+        result: null,
+        error: null,
+      });
+    }
+
+    const logs = getRecentTaskRunLogs('task-log-3', 3);
+    expect(logs).toHaveLength(3);
+    // Should be the 3 most recent
+    expect(logs[0].run_at).toBe('2024-01-08T09:00:00.000Z');
+    expect(logs[2].run_at).toBe('2024-01-06T09:00:00.000Z');
+  });
+
+  it('only returns logs for the specified task', () => {
+    makeTask('task-log-4a');
+    makeTask('task-log-4b');
+
+    logTaskRun({ task_id: 'task-log-4a', run_at: '2024-01-01T09:00:00.000Z', duration_ms: 1000, status: 'success', result: null, error: null });
+    logTaskRun({ task_id: 'task-log-4b', run_at: '2024-01-01T10:00:00.000Z', duration_ms: 500, status: 'error', result: null, error: 'failed' });
+
+    const logs4a = getRecentTaskRunLogs('task-log-4a');
+    expect(logs4a).toHaveLength(1);
+    expect(logs4a[0].task_id).toBe('task-log-4a');
+
+    const logs4b = getRecentTaskRunLogs('task-log-4b');
+    expect(logs4b).toHaveLength(1);
+    expect(logs4b[0].error).toBe('failed');
+  });
+});
+
+describe('pruneTaskRunLogs', () => {
+  it('deletes logs older than the given days', () => {
+    makeTask('task-prune-1');
+
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
+    const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+
+    logTaskRun({ task_id: 'task-prune-1', run_at: old, duration_ms: 500, status: 'success', result: null, error: null });
+    logTaskRun({ task_id: 'task-prune-1', run_at: recent, duration_ms: 500, status: 'success', result: null, error: null });
+
+    const deleted = pruneTaskRunLogs(30);
+    expect(deleted).toBe(1);
+
+    const remaining = getRecentTaskRunLogs('task-prune-1', 10);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].run_at).toBe(recent);
+  });
+
+  it('returns 0 when nothing is old enough to prune', () => {
+    makeTask('task-prune-2');
+
+    const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+    logTaskRun({ task_id: 'task-prune-2', run_at: recent, duration_ms: 500, status: 'success', result: null, error: null });
+
+    const deleted = pruneTaskRunLogs(30);
+    expect(deleted).toBe(0);
   });
 });
 

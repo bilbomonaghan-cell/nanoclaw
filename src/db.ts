@@ -551,6 +551,34 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+/**
+ * Retrieve the N most recent run log entries for a task, newest first.
+ */
+export function getRecentTaskRunLogs(
+  taskId: string,
+  limit: number = 5,
+): TaskRunLog[] {
+  return db
+    .prepare(
+      'SELECT * FROM task_run_logs WHERE task_id = ? ORDER BY run_at DESC LIMIT ?',
+    )
+    .all(taskId, limit) as TaskRunLog[];
+}
+
+/**
+ * Delete task run logs older than `olderThanDays` days.
+ * Returns the number of rows deleted.
+ */
+export function pruneTaskRunLogs(olderThanDays: number = 30): number {
+  const cutoff = new Date(
+    Date.now() - olderThanDays * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  const result = db
+    .prepare('DELETE FROM task_run_logs WHERE run_at < ?')
+    .run(cutoff);
+  return result.changes;
+}
+
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {

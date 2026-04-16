@@ -11,6 +11,7 @@ import {
 import {
   getAllTasks,
   getDueTasks,
+  getRecentTaskRunLogs,
   getTaskById,
   logTaskRun,
   updateTask,
@@ -206,10 +207,21 @@ async function runTask(
       id: t.id,
       groupFolder: t.group_folder,
       prompt: t.prompt,
+      script: t.script || undefined,
       schedule_type: t.schedule_type,
       schedule_value: t.schedule_value,
+      context_mode: t.context_mode,
       status: t.status,
       next_run: t.next_run,
+      last_run: t.last_run,
+      last_result: t.last_result,
+      created_at: t.created_at,
+      recent_runs: getRecentTaskRunLogs(t.id, 5).map((r) => ({
+        run_at: r.run_at,
+        duration_ms: r.duration_ms,
+        status: r.status,
+        error: r.error,
+      })),
     })),
   );
 

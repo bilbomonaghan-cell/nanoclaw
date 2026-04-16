@@ -186,12 +186,13 @@ server.tool(
 
       const formatted = tasks
         .map(
-          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; context_mode?: string; script?: string; status: string; next_run: string; last_run?: string }) => {
+          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; context_mode?: string; script?: string; status: string; next_run?: string | null; last_run?: string | null }) => {
             const promptPreview = t.prompt.length > 60 ? t.prompt.slice(0, 60) + '…' : t.prompt;
             const mode = t.context_mode || 'group';
             const scriptFlag = t.script ? ' [script]' : '';
             const next = t.next_run ? t.next_run.slice(0, 16).replace('T', ' ') : 'N/A';
-            return `- [${t.id}] ${promptPreview}\n  ${t.schedule_type}: ${t.schedule_value} | ${mode}${scriptFlag} | ${t.status} | next: ${next}`;
+            const lastRun = t.last_run ? t.last_run.slice(0, 16).replace('T', ' ') : 'never';
+            return `- [${t.id}] ${promptPreview}\n  ${t.schedule_type}: ${t.schedule_value} | ${mode}${scriptFlag} | ${t.status} | next: ${next} | last: ${lastRun}`;
           },
         )
         .join('\n');
@@ -251,6 +252,19 @@ server.tool(
           ? task.last_result.slice(0, 500) + '…'
           : task.last_result;
         lines.push(``, `**Last result:**`, truncated);
+      }
+
+      // Show recent run history if available
+      const recentRuns = task.recent_runs as Array<{ run_at: string; duration_ms: number; status: string; error?: string | null }> | undefined;
+      if (recentRuns && recentRuns.length > 0) {
+        lines.push(``, `**Recent runs (last ${recentRuns.length}):**`);
+        for (const run of recentRuns) {
+          const ts = run.run_at.slice(0, 16).replace('T', ' ');
+          const durationSec = (run.duration_ms / 1000).toFixed(1);
+          const icon = run.status === 'success' ? '✅' : '❌';
+          const errSuffix = run.error ? ` — ${run.error.slice(0, 80)}` : '';
+          lines.push(`  ${icon} ${ts} (${durationSec}s)${errSuffix}`);
+        }
       }
 
       return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
