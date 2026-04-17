@@ -479,9 +479,30 @@ describe('getRecentTaskRunLogs', () => {
   it('returns logs in newest-first order', () => {
     makeTask('task-log-2');
 
-    logTaskRun({ task_id: 'task-log-2', run_at: '2024-01-01T09:00:00.000Z', duration_ms: 1000, status: 'success', result: 'ok', error: null });
-    logTaskRun({ task_id: 'task-log-2', run_at: '2024-01-02T09:00:00.000Z', duration_ms: 1500, status: 'error', result: null, error: 'timeout' });
-    logTaskRun({ task_id: 'task-log-2', run_at: '2024-01-03T09:00:00.000Z', duration_ms: 900, status: 'success', result: 'done', error: null });
+    logTaskRun({
+      task_id: 'task-log-2',
+      run_at: '2024-01-01T09:00:00.000Z',
+      duration_ms: 1000,
+      status: 'success',
+      result: 'ok',
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'task-log-2',
+      run_at: '2024-01-02T09:00:00.000Z',
+      duration_ms: 1500,
+      status: 'error',
+      result: null,
+      error: 'timeout',
+    });
+    logTaskRun({
+      task_id: 'task-log-2',
+      run_at: '2024-01-03T09:00:00.000Z',
+      duration_ms: 900,
+      status: 'success',
+      result: 'done',
+      error: null,
+    });
 
     const logs = getRecentTaskRunLogs('task-log-2');
     expect(logs).toHaveLength(3);
@@ -516,8 +537,22 @@ describe('getRecentTaskRunLogs', () => {
     makeTask('task-log-4a');
     makeTask('task-log-4b');
 
-    logTaskRun({ task_id: 'task-log-4a', run_at: '2024-01-01T09:00:00.000Z', duration_ms: 1000, status: 'success', result: null, error: null });
-    logTaskRun({ task_id: 'task-log-4b', run_at: '2024-01-01T10:00:00.000Z', duration_ms: 500, status: 'error', result: null, error: 'failed' });
+    logTaskRun({
+      task_id: 'task-log-4a',
+      run_at: '2024-01-01T09:00:00.000Z',
+      duration_ms: 1000,
+      status: 'success',
+      result: null,
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'task-log-4b',
+      run_at: '2024-01-01T10:00:00.000Z',
+      duration_ms: 500,
+      status: 'error',
+      result: null,
+      error: 'failed',
+    });
 
     const logs4a = getRecentTaskRunLogs('task-log-4a');
     expect(logs4a).toHaveLength(1);
@@ -536,8 +571,22 @@ describe('pruneTaskRunLogs', () => {
     const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000).toISOString();
     const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
 
-    logTaskRun({ task_id: 'task-prune-1', run_at: old, duration_ms: 500, status: 'success', result: null, error: null });
-    logTaskRun({ task_id: 'task-prune-1', run_at: recent, duration_ms: 500, status: 'success', result: null, error: null });
+    logTaskRun({
+      task_id: 'task-prune-1',
+      run_at: old,
+      duration_ms: 500,
+      status: 'success',
+      result: null,
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'task-prune-1',
+      run_at: recent,
+      duration_ms: 500,
+      status: 'success',
+      result: null,
+      error: null,
+    });
 
     const deleted = pruneTaskRunLogs(30);
     expect(deleted).toBe(1);
@@ -551,7 +600,14 @@ describe('pruneTaskRunLogs', () => {
     makeTask('task-prune-2');
 
     const recent = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
-    logTaskRun({ task_id: 'task-prune-2', run_at: recent, duration_ms: 500, status: 'success', result: null, error: null });
+    logTaskRun({
+      task_id: 'task-prune-2',
+      run_at: recent,
+      duration_ms: 500,
+      status: 'success',
+      result: null,
+      error: null,
+    });
 
     const deleted = pruneTaskRunLogs(30);
     expect(deleted).toBe(0);
