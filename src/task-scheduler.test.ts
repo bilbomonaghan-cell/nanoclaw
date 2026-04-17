@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('./container-runner.js', () => ({
+  runContainerAgent: vi.fn(),
+  writeTasksSnapshot: vi.fn(),
+}));
+
 import { _initTestDatabase, createTask, getTaskById } from './db.js';
 import {
   _resetSchedulerLoopForTests,
   computeNextRun,
   startSchedulerLoop,
 } from './task-scheduler.js';
+import { runContainerAgent } from './container-runner.js';
 
 describe('task scheduler', () => {
   beforeEach(() => {
@@ -94,6 +100,70 @@ describe('task scheduler', () => {
     };
 
     expect(computeNextRun(task)).toBeNull();
+  });
+
+  it('sends failure notification to group chat when a task errors', async () => {
+    // Register a valid group so task-scheduler can find it
+    const { setRegisteredGroup } = await import('./db.js');
+    setRegisteredGroup('notif@g.us', {
+      name: 'Notif Group',
+      folder: 'notif-group',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    createTask({
+      id: 'task-fail-notif',
+      group_folder: 'notif-group',
+      chat_jid: 'notif@g.us',
+      prompt: 'will fail',
+      schedule_type: 'once',
+      schedule_value: '2026-01-01T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 1000).toISOString(),
+      status: 'active',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+
+    // Mock runContainerAgent to return an error
+    vi.mocked(runContainerAgent).mockResolvedValueOnce({
+      status: 'error',
+      error: 'Container OOM',
+      result: null,
+    });
+
+    const sentMessages: { jid: string; text: string }[] = [];
+    const sendMessage = vi.fn(async (jid: string, text: string) => {
+      sentMessages.push({ jid, text });
+    });
+
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'notif@g.us': {
+          name: 'Notif Group',
+          folder: 'notif-group',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    // sendMessage should have been called with an error notification
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].jid).toBe('notif@g.us');
+    expect(sentMessages[0].text).toMatch(/⚠️.*failed.*Container OOM/i);
   });
 
   it('computeNextRun skips missed intervals without infinite loop', () => {

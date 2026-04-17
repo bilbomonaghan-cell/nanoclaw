@@ -351,6 +351,26 @@ async function runTask(
       ? result.slice(0, 200)
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
+
+  // Notify the group on task failure so silent errors surface in the chat
+  if (error) {
+    const shortId = task.id.slice(-12);
+    const errMsg = error.length > 150 ? error.slice(0, 150) + '…' : error;
+    const nextRunMsg = nextRun
+      ? ` Next attempt: ${nextRun.slice(0, 16).replace('T', ' ')} UTC`
+      : '';
+    await deps
+      .sendMessage(
+        task.chat_jid,
+        `⚠️ Task [${shortId}] failed: ${errMsg}${nextRunMsg}`,
+      )
+      .catch((notifyErr) => {
+        logger.warn(
+          { taskId: task.id, notifyErr },
+          'Failed to send task error notification',
+        );
+      });
+  }
 }
 
 let schedulerRunning = false;

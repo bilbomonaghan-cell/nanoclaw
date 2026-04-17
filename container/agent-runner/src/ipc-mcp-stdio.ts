@@ -334,6 +334,34 @@ server.tool(
 );
 
 server.tool(
+  'run_task_now',
+  'Trigger a scheduled task to run immediately, bypassing its normal schedule. The task will run within the next scheduler poll (up to 60 seconds). Useful for testing a task or triggering a one-off manual run without changing its schedule.',
+  {
+    task_id: z.string().describe('The ID of the task to run immediately'),
+  },
+  async (args) => {
+    const data = {
+      type: 'run_task_now',
+      taskId: args.task_id,
+      groupFolder,
+      isMain,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Task ${args.task_id} scheduled for immediate run (picks up on next scheduler poll, within ~60s).`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'update_task',
   'Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.',
   {

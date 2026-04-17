@@ -327,6 +327,95 @@ describe('cancel_task authorization', () => {
   });
 });
 
+// --- run_task_now authorization ---
+
+describe('run_task_now authorization', () => {
+  const baseTask = {
+    group_folder: 'other-group',
+    chat_jid: 'other@g.us',
+    prompt: 'do something',
+    schedule_type: 'cron' as const,
+    schedule_value: '0 9 * * *',
+    context_mode: 'isolated' as const,
+    status: 'active' as const,
+    created_at: '2024-01-01T00:00:00.000Z',
+  };
+
+  it('main group can trigger any task immediately', async () => {
+    createTask({ id: 'task-run-now', next_run: null, ...baseTask });
+
+    await processTaskIpc(
+      { type: 'run_task_now', taskId: 'task-run-now' },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    const task = getTaskById('task-run-now');
+    expect(task?.status).toBe('active');
+    expect(task?.next_run).toBeTruthy();
+    // next_run should be very recent (within the last second)
+    expect(new Date(task!.next_run!).getTime()).toBeGreaterThan(
+      Date.now() - 2000,
+    );
+  });
+
+  it('non-main group can trigger its own task immediately', async () => {
+    createTask({ id: 'task-own-run', next_run: null, ...baseTask });
+
+    await processTaskIpc(
+      { type: 'run_task_now', taskId: 'task-own-run' },
+      'other-group',
+      false,
+      deps,
+    );
+
+    const task = getTaskById('task-own-run');
+    expect(task?.next_run).toBeTruthy();
+    expect(new Date(task!.next_run!).getTime()).toBeGreaterThan(
+      Date.now() - 2000,
+    );
+  });
+
+  it('non-main group cannot trigger another groups task', async () => {
+    createTask({
+      id: 'task-main-run',
+      group_folder: 'whatsapp_main',
+      chat_jid: 'main@g.us',
+      prompt: 'main task',
+      schedule_type: 'cron' as const,
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated' as const,
+      next_run: null,
+      status: 'active' as const,
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    await processTaskIpc(
+      { type: 'run_task_now', taskId: 'task-main-run' },
+      'other-group',
+      false,
+      deps,
+    );
+
+    // next_run should still be null — not updated
+    const task = getTaskById('task-main-run');
+    expect(task?.next_run).toBeNull();
+  });
+
+  it('run_task_now is a no-op for non-existent task', async () => {
+    // Should not throw, just log a warning
+    await expect(
+      processTaskIpc(
+        { type: 'run_task_now', taskId: 'task-nonexistent' },
+        'whatsapp_main',
+        true,
+        deps,
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
+
 // --- register_group authorization ---
 
 describe('register_group authorization', () => {

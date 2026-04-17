@@ -461,6 +461,35 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'run_task_now':
+      if (data.taskId) {
+        const task = getTaskById(data.taskId);
+        if (!task) {
+          logger.warn(
+            { taskId: data.taskId, sourceGroup },
+            'Task not found for run_task_now',
+          );
+          break;
+        }
+        if (!isMain && task.group_folder !== sourceGroup) {
+          logger.warn(
+            { taskId: data.taskId, sourceGroup },
+            'Unauthorized run_task_now attempt blocked',
+          );
+          break;
+        }
+        // Set next_run to now and ensure active — scheduler picks it up on next poll
+        updateTask(data.taskId, {
+          status: 'active',
+          next_run: new Date().toISOString(),
+        });
+        logger.info(
+          { taskId: data.taskId, sourceGroup },
+          'Task scheduled for immediate run via IPC',
+        );
+      }
+      break;
+
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }
