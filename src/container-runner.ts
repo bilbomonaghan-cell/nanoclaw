@@ -181,6 +181,7 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'responses'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -753,6 +754,48 @@ export function writeGroupsSnapshot(
       {
         groups: visibleGroups,
         lastSync: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+/**
+ * Write a snapshot of registered groups to the group's IPC directory.
+ * Main group sees all registered groups; non-main groups see only themselves.
+ * Called before each agent run so the container has current group info.
+ */
+export function writeRegisteredGroupsSnapshot(
+  groupFolder: string,
+  isMain: boolean,
+  registeredGroups: Record<string, RegisteredGroup>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const entries = Object.entries(registeredGroups).map(([jid, g]) => ({
+    jid,
+    name: g.name,
+    folder: g.folder,
+    trigger: g.trigger,
+    added_at: g.added_at,
+    requiresTrigger: g.requiresTrigger,
+    isMain: g.isMain ?? false,
+  }));
+
+  // Non-main groups only see themselves
+  const visibleEntries = isMain
+    ? entries
+    : entries.filter((e) => e.folder === groupFolder);
+
+  const snapshotFile = path.join(groupIpcDir, 'registered_groups.json');
+  fs.writeFileSync(
+    snapshotFile,
+    JSON.stringify(
+      {
+        groups: visibleEntries,
+        updatedAt: new Date().toISOString(),
       },
       null,
       2,

@@ -748,6 +748,207 @@ Use this to proactively check if anything looks degraded before starting work, o
   },
 );
 
+server.tool(
+  'list_groups',
+  `List registered chat groups. Main group sees all registered groups. Non-main groups see only their own entry.
+
+Returns: group JID, name, folder, trigger word, and whether the group is the main group.
+Useful for: understanding what groups are active, finding JIDs for scheduling cross-group tasks, auditing group configuration.`,
+  {
+    filter: z
+      .string()
+      .optional()
+      .describe('Optional substring filter for group name or folder (case-insensitive)'),
+  },
+  async (args) => {
+    const snapshotPath = '/workspace/ipc/registered_groups.json';
+
+    if (!fs.existsSync(snapshotPath)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'No registered groups snapshot found. This may be because the host has not written it yet — try again after the next agent run.',
+          },
+        ],
+      };
+    }
+
+    const raw = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8')) as {
+      groups: Array<{
+        jid: string;
+        name: string;
+        folder: string;
+        trigger: string;
+        added_at: string;
+        requiresTrigger?: boolean;
+        isMain?: boolean;
+      }>;
+      updatedAt: string;
+    };
+
+    let groups = raw.groups;
+
+    if (args.filter) {
+      const f = args.filter.toLowerCase();
+      groups = groups.filter(
+        (g) =>
+          g.name.toLowerCase().includes(f) ||
+          g.folder.toLowerCase().includes(f),
+      );
+    }
+
+    if (groups.length === 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: args.filter
+              ? `No groups match "${args.filter}".`
+              : 'No registered groups found.',
+          },
+        ],
+      };
+    }
+
+    const lines = groups.map((g) => {
+      const flags: string[] = [];
+      if (g.isMain) flags.push('MAIN');
+      if (g.requiresTrigger === false) flags.push('no-trigger');
+      const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
+      return `• ${g.name}${flagStr}\n  folder: ${g.folder} | JID: ${g.jid}\n  trigger: ${g.trigger} | added: ${g.added_at.slice(0, 10)}`;
+    });
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `${groups.length} registered group(s) (snapshot from ${raw.updatedAt.slice(0, 16).replace('T', ' ')} UTC):\n\n${lines.join('\n\n')}`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'search_messages',
+  `Search the chat message history for messages containing a keyword or phrase. Searches this group's conversation history stored on the host and returns matching messages with timestamps and sender names.
+
+Useful for:
+- Recalling what was discussed in past conversations
+- Finding specific information mentioned by users
+- Building context from historical exchanges
+
+Note: Only searches messages stored in the host database (typically the last several weeks). Does NOT search memory entries — use memory_search for those.`,
+  {
+    query: z
+      .string()
+      .describe('Text to search for in message content (case-insensitive substring match)'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('Maximum number of results to return (default: 20, max: 100)'),
+    from_days: z
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .optional()
+      .describe('Only search messages from the last N days (default: 30)'),
+    include_bot_messages: z
+      .boolean()
+      .optional()
+      .describe("Include the assistant's own replies in results (default: false)"),
+  },
+  async (args) => {
+    const queryId = `sq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `/workspace/ipc/responses/${queryId}.json`;
+
+    // Write query to IPC tasks dir — host will process and write response
+    const queryFilePath = `${ipcTasksDir}/search_${queryId}.json`;
+    fs.writeFileSync(
+      queryFilePath,
+      JSON.stringify({
+        type: 'search_messages',
+        queryId,
+        query: args.query,
+        searchLimit: args.limit ?? 20,
+        fromDays: args.from_days ?? 30,
+        includeBotMessages: args.include_bot_messages ?? false,
+      }),
+      'utf-8',
+    );
+
+    // Poll for response (host processes IPC every ~1s; give 8s total)
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          results: Array<{
+            sender_name: string;
+            content: string;
+            timestamp: string;
+            is_from_me: number;
+            is_bot_message: number;
+          }>;
+        };
+        try {
+          fs.unlinkSync(responseFile);
+        } catch {
+          /* best-effort cleanup */
+        }
+
+        if (!raw.results || raw.results.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `No messages found matching "${args.query}" in the last ${args.from_days ?? 30} days.`,
+              },
+            ],
+          };
+        }
+
+        const lines = raw.results.map((r) => {
+          const ts = r.timestamp.slice(0, 16).replace('T', ' ');
+          const who = r.is_from_me ? '🤖 me' : r.sender_name || 'unknown';
+          const preview = r.content.length > 300 ? r.content.slice(0, 300) + '…' : r.content;
+          return `[${ts}] ${who}: ${preview}`;
+        });
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Found ${raw.results.length} message(s) matching "${args.query}":\n\n${lines.join('\n\n')}`,
+            },
+          ],
+        };
+      }
+    }
+
+    // Timed out — clean up query file
+    try {
+      fs.unlinkSync(queryFilePath);
+    } catch {
+      /* already processed or never written */
+    }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Search timed out — the host did not respond in time. The nanoclaw service may be busy. Please try again.',
+        },
+      ],
+    };
+  },
+);
+
 // ─── Ollama Tools ─────────────────────────────────────────────────────────────
 
 const OLLAMA_BASE = 'http://host.docker.internal:11434';

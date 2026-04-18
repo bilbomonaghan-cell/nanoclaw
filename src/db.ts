@@ -721,6 +721,46 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
   return result;
 }
 
+// --- Message search ---
+
+export interface MessageSearchResult {
+  id: string;
+  sender_name: string;
+  content: string;
+  timestamp: string;
+  is_from_me: number;
+  is_bot_message: number;
+}
+
+/**
+ * Search message history for a chat by content substring.
+ * Returns results newest-first.
+ */
+export function searchMessages(
+  chatJid: string,
+  query: string,
+  limit: number = 20,
+  fromDays: number = 30,
+  includeBotMessages: boolean = false,
+): MessageSearchResult[] {
+  const sinceDate = new Date(Date.now() - fromDays * 86_400_000).toISOString();
+  const likeQuery = `%${query.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+  const botFilter = includeBotMessages ? '' : 'AND is_bot_message = 0';
+  const rows = db
+    .prepare(
+      `SELECT id, sender_name, content, timestamp, is_from_me, is_bot_message
+       FROM messages
+       WHERE chat_jid = ?
+         AND content LIKE ? ESCAPE '\\'
+         AND timestamp >= ?
+         ${botFilter}
+       ORDER BY timestamp DESC
+       LIMIT ?`,
+    )
+    .all(chatJid, likeQuery, sinceDate, limit);
+  return rows as MessageSearchResult[];
+}
+
 // --- JSON migration ---
 
 function migrateJsonState(): void {

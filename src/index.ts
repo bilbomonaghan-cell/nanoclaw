@@ -21,6 +21,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeRegisteredGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
@@ -159,6 +160,12 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
       fs.writeFileSync(groupMdFile, content);
       logger.info({ folder: group.folder }, 'Created CLAUDE.md from template');
     }
+  }
+
+  // Update registered groups snapshot so containers see the new group immediately
+  const mainGroup = Object.values(registeredGroups).find((g) => g.isMain);
+  if (mainGroup) {
+    writeRegisteredGroupsSnapshot(mainGroup.folder, true, registeredGroups);
   }
 
   logger.info(
@@ -358,6 +365,7 @@ async function runAgent(
     availableGroups,
     new Set(Object.keys(registeredGroups)),
   );
+  writeRegisteredGroupsSnapshot(group.folder, isMain, registeredGroups);
 
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput

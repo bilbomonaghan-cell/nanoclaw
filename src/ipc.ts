@@ -5,7 +5,7 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import { createTask, deleteTask, getTaskById, searchMessages, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -172,6 +172,12 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For search_messages
+    queryId?: string;
+    query?: string;
+    searchLimit?: number;
+    fromDays?: number;
+    includeBotMessages?: boolean;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -489,6 +495,44 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'search_messages': {
+      if (!data.queryId || !data.query) {
+        logger.warn({ sourceGroup }, 'search_messages missing queryId or query');
+        break;
+      }
+      // Find the chat JID for this group
+      const groupEntry = Object.entries(registeredGroups).find(
+        ([, g]) => g.folder === sourceGroup,
+      );
+      if (!groupEntry) {
+        logger.warn(
+          { sourceGroup },
+          'search_messages: group not found in registered groups',
+        );
+        break;
+      }
+      const chatJid = groupEntry[0];
+      const results = searchMessages(
+        chatJid,
+        data.query as string,
+        typeof data.searchLimit === 'number' ? data.searchLimit : 20,
+        typeof data.fromDays === 'number' ? data.fromDays : 30,
+        data.includeBotMessages === true,
+      );
+
+      // Write response file to group's IPC responses directory
+      const ipcBaseDir = path.join(DATA_DIR, 'ipc');
+      const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+      fs.mkdirSync(responsesDir, { recursive: true });
+      const responseFile = path.join(responsesDir, `${data.queryId}.json`);
+      fs.writeFileSync(responseFile, JSON.stringify({ results }), 'utf-8');
+      logger.info(
+        { sourceGroup, queryId: data.queryId, resultCount: results.length },
+        'search_messages: wrote response',
+      );
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
