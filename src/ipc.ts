@@ -5,7 +5,13 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, searchMessages, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getTaskById,
+  searchMessages,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -498,7 +504,10 @@ export async function processTaskIpc(
 
     case 'search_messages': {
       if (!data.queryId || !data.query) {
-        logger.warn({ sourceGroup }, 'search_messages missing queryId or query');
+        logger.warn(
+          { sourceGroup },
+          'search_messages missing queryId or query',
+        );
         break;
       }
       // Find the chat JID for this group
