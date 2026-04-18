@@ -12,6 +12,7 @@ import {
   getTaskById,
   logTaskRun,
   pruneTaskRunLogs,
+  searchMessages,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -645,5 +646,93 @@ describe('registered group isMain', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isMain).toBeUndefined();
+  });
+});
+
+// --- searchMessages ---
+
+describe('searchMessages', () => {
+  const jid = 'search-test@g.us';
+
+  function storeMsg(
+    id: string,
+    content: string,
+    opts: { is_from_me?: boolean; is_bot_message?: boolean; daysAgo?: number } = {},
+  ) {
+    const daysAgo = opts.daysAgo ?? 0;
+    const ts = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    storeMessage({
+      id,
+      chat_jid: jid,
+      sender: 'sender1',
+      sender_name: 'Alice',
+      content,
+      timestamp: ts,
+      is_from_me: opts.is_from_me ?? false,
+      is_bot_message: opts.is_bot_message ?? false,
+    });
+  }
+
+  it('returns messages matching query substring', () => {
+    storeChatMetadata(jid, 'Search Test', jid, 'test', false);
+    storeMsg('sm1', 'Hello world from Alice');
+    storeMsg('sm2', 'Another message here');
+    storeMsg('sm3', 'World domination plans');
+
+    const results = searchMessages(jid, 'world');
+    expect(results).toHaveLength(2);
+    const contents = results.map((r) => r.content);
+    expect(contents).toContain('Hello world from Alice');
+    expect(contents).toContain('World domination plans');
+  });
+
+  it('is case-insensitive', () => {
+    storeChatMetadata(jid, 'Search Test', jid, 'test', false);
+    storeMsg('sm4', 'UPPERCASE QUERY');
+    storeMsg('sm5', 'lowercase query');
+
+    const results = searchMessages(jid, 'QUERY');
+    expect(results).toHaveLength(2);
+  });
+
+  it('excludes bot messages by default', () => {
+    storeChatMetadata(jid, 'Search Test', jid, 'test', false);
+    storeMsg('sm6', 'Bot reply about bananas', { is_bot_message: true });
+    storeMsg('sm7', 'User message about bananas');
+
+    const resultsDefault = searchMessages(jid, 'bananas');
+    expect(resultsDefault).toHaveLength(1);
+    expect(resultsDefault[0].id).toBe('sm7');
+
+    const resultsWithBot = searchMessages(jid, 'bananas', 20, 30, true);
+    expect(resultsWithBot).toHaveLength(2);
+  });
+
+  it('respects from_days cutoff', () => {
+    storeChatMetadata(jid, 'Search Test', jid, 'test', false);
+    storeMsg('sm8', 'Recent pineapple message', { daysAgo: 2 });
+    storeMsg('sm9', 'Old pineapple message', { daysAgo: 60 });
+
+    const recentOnly = searchMessages(jid, 'pineapple', 20, 30);
+    expect(recentOnly).toHaveLength(1);
+    expect(recentOnly[0].id).toBe('sm8');
+  });
+
+  it('returns empty array when no matches', () => {
+    storeChatMetadata(jid, 'Search Test', jid, 'test', false);
+    storeMsg('sm10', 'Just a regular message');
+
+    const results = searchMessages(jid, 'xyzzy-no-match');
+    expect(results).toHaveLength(0);
+  });
+
+  it('respects limit parameter', () => {
+    storeChatMetadata(jid, 'Search Test', jid, 'test', false);
+    for (let i = 0; i < 10; i++) {
+      storeMsg(`sm-limit-${i}`, `limit test message ${i}`);
+    }
+
+    const limited = searchMessages(jid, 'limit test', 3);
+    expect(limited).toHaveLength(3);
   });
 });
