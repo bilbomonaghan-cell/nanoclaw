@@ -8,6 +8,7 @@ import {
   getAllRegisteredGroups,
   getMessagesSince,
   getNewMessages,
+  getRecentMessages,
   getRecentTaskRunLogs,
   getTaskById,
   logTaskRun,
@@ -657,7 +658,11 @@ describe('searchMessages', () => {
   function storeMsg(
     id: string,
     content: string,
-    opts: { is_from_me?: boolean; is_bot_message?: boolean; daysAgo?: number } = {},
+    opts: {
+      is_from_me?: boolean;
+      is_bot_message?: boolean;
+      daysAgo?: number;
+    } = {},
   ) {
     const daysAgo = opts.daysAgo ?? 0;
     const ts = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
@@ -734,5 +739,93 @@ describe('searchMessages', () => {
 
     const limited = searchMessages(jid, 'limit test', 3);
     expect(limited).toHaveLength(3);
+  });
+});
+
+// --- getRecentMessages ---
+
+describe('getRecentMessages', () => {
+  const jid = 'recent-test@g.us';
+
+  function storeMsg(
+    id: string,
+    content: string,
+    opts: {
+      is_from_me?: boolean;
+      is_bot_message?: boolean;
+      daysAgo?: number;
+    } = {},
+  ) {
+    const daysAgo = opts.daysAgo ?? 0;
+    const ts = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    storeMessage({
+      id,
+      chat_jid: jid,
+      sender: 'sender1',
+      sender_name: 'Bob',
+      content,
+      timestamp: ts,
+      is_from_me: opts.is_from_me ?? false,
+      is_bot_message: opts.is_bot_message ?? false,
+    });
+  }
+
+  it('returns recent messages newest-first', () => {
+    storeChatMetadata(jid, 'Recent Test', jid, 'test', false);
+    storeMsg('rq1', 'First message', { daysAgo: 2 });
+    storeMsg('rq2', 'Second message', { daysAgo: 1 });
+    storeMsg('rq3', 'Third message', { daysAgo: 0 });
+
+    const results = getRecentMessages(jid, 20, 7);
+    expect(results.length).toBeGreaterThanOrEqual(3);
+    // Newest-first ordering
+    expect(results[0].id).toBe('rq3');
+    expect(results[1].id).toBe('rq2');
+    expect(results[2].id).toBe('rq1');
+  });
+
+  it('excludes bot messages by default', () => {
+    storeChatMetadata(jid, 'Recent Test', jid, 'test', false);
+    storeMsg('rq4', 'Bot reply text', { is_bot_message: true });
+    storeMsg('rq5', 'User message text');
+
+    const defaultResults = getRecentMessages(jid, 20, 7);
+    const ids = defaultResults.map((r) => r.id);
+    expect(ids).not.toContain('rq4');
+    expect(ids).toContain('rq5');
+
+    const withBot = getRecentMessages(jid, 20, 7, true);
+    const withBotIds = withBot.map((r) => r.id);
+    expect(withBotIds).toContain('rq4');
+    expect(withBotIds).toContain('rq5');
+  });
+
+  it('respects from_days cutoff', () => {
+    storeChatMetadata(jid, 'Recent Test', jid, 'test', false);
+    storeMsg('rq6', 'Recent message', { daysAgo: 2 });
+    storeMsg('rq7', 'Old message', { daysAgo: 30 });
+
+    const results = getRecentMessages(jid, 20, 7);
+    const ids = results.map((r) => r.id);
+    expect(ids).toContain('rq6');
+    expect(ids).not.toContain('rq7');
+  });
+
+  it('respects limit parameter', () => {
+    storeChatMetadata(jid, 'Recent Test', jid, 'test', false);
+    for (let i = 0; i < 10; i++) {
+      storeMsg(`rq-lim-${i}`, `limit message ${i}`);
+    }
+
+    const limited = getRecentMessages(jid, 4, 7);
+    expect(limited).toHaveLength(4);
+  });
+
+  it('returns empty array when no messages in window', () => {
+    storeChatMetadata(jid, 'Recent Test', jid, 'test', false);
+    storeMsg('rq8', 'Very old message', { daysAgo: 90 });
+
+    const results = getRecentMessages(jid, 20, 7);
+    expect(results).toHaveLength(0);
   });
 });

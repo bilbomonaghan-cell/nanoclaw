@@ -100,6 +100,12 @@ Example — only wake agent if there are open PRs:
 prs=$(curl -s "https://api.github.com/repos/owner/repo/pulls?state=open" | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); process.stdout.write(JSON.stringify({wakeAgent:d.length>0,data:{count:d.length,titles:d.slice(0,3).map(p=>p.title)}}))")
 echo "$prs"
 \`\`\``),
+    notify_on_success: z
+      .boolean()
+      .optional()
+      .describe(
+        'Send a "✅ Task completed in Xs" message to the group when the task succeeds (default: false). Useful for maintenance tasks where you want to confirm completion. For tasks that always send a result message, leave this off to avoid double-messaging.',
+      ),
   },
   async (args) => {
     // Validate schedule_value before writing IPC
@@ -153,6 +159,7 @@ echo "$prs"
       timestamp: new Date().toISOString(),
     };
     if (args.script) data.script = args.script;
+    if (args.notify_on_success) data.notifyOnSuccess = String(args.notify_on_success);
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -234,6 +241,7 @@ server.tool(
         `Status: ${task.status}`,
         `Schedule: ${task.schedule_type} — ${task.schedule_value}`,
         `Context mode: ${task.context_mode || 'group'}`,
+        `Notify on success: ${task.notify_on_success ? 'yes' : 'no'}`,
         `Next run: ${task.next_run || 'N/A'}`,
         `Last run: ${task.last_run || 'never'}`,
         `Created: ${task.created_at || 'unknown'}`,
@@ -371,6 +379,7 @@ server.tool(
     schedule_value: z.string().optional().describe('New schedule value (see schedule_task for format)'),
     script: z.string().nullable().optional().describe('New pre-flight bash script, or null to remove an existing script'),
     context_mode: z.enum(['group', 'isolated']).optional().describe('New context mode (group=with chat history, isolated=fresh session)'),
+    notify_on_success: z.boolean().optional().describe('Enable or disable success notifications for this task'),
   },
   async (args) => {
     // Validate schedule_value if provided
@@ -408,6 +417,8 @@ server.tool(
     if (args.schedule_value !== undefined) data.schedule_value = args.schedule_value;
     if (args.script !== undefined) data.script = args.script ?? '';   // empty string signals "clear script"
     if (args.context_mode !== undefined) data.context_mode = args.context_mode;
+    if (args.notify_on_success !== undefined)
+      data.notifyOnSuccess = String(args.notify_on_success);
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -945,6 +956,164 @@ Note: Only searches messages stored in the host database (typically the last sev
           text: 'Search timed out — the host did not respond in time. The nanoclaw service may be busy. Please try again.',
         },
       ],
+    };
+  },
+);
+
+server.tool(
+  'get_recent_messages',
+  `Retrieve the most recent messages from this group's chat history, newest first. No keyword required — returns messages as-is.
+
+Useful for:
+- Catching up on recent conversation context at the start of a task
+- Checking what was said in the last few hours/days
+- Getting the "last N messages" view without searching for a specific term
+
+Note: Only retrieves messages stored in the host database (typically the last several weeks). Does NOT search memory entries — use memory_search for those. For keyword-based search use search_messages instead.`,
+  {
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('Maximum number of messages to return (default: 20, max: 100)'),
+    from_days: z
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .optional()
+      .describe('Only look at messages from the last N days (default: 7)'),
+    include_bot_messages: z
+      .boolean()
+      .optional()
+      .describe("Include the assistant's own replies in results (default: false)"),
+  },
+  async (args) => {
+    const queryId = `rq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `/workspace/ipc/responses/${queryId}.json`;
+
+    const queryFilePath = `${ipcTasksDir}/recent_${queryId}.json`;
+    fs.writeFileSync(
+      queryFilePath,
+      JSON.stringify({
+        type: 'get_recent_messages',
+        queryId,
+        recentLimit: args.limit ?? 20,
+        recentFromDays: args.from_days ?? 7,
+        includeBotMessages: args.include_bot_messages ?? false,
+      }),
+      'utf-8',
+    );
+
+    // Poll for response (host processes IPC every ~1s; give 8s total)
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          results: Array<{
+            sender_name: string;
+            content: string;
+            timestamp: string;
+            is_from_me: number;
+            is_bot_message: number;
+          }>;
+        };
+        try {
+          fs.unlinkSync(responseFile);
+        } catch {
+          /* best-effort cleanup */
+        }
+
+        if (!raw.results || raw.results.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `No messages found in the last ${args.from_days ?? 7} days.`,
+              },
+            ],
+          };
+        }
+
+        const lines = raw.results.map((r) => {
+          const ts = r.timestamp.slice(0, 16).replace('T', ' ');
+          const who = r.is_from_me ? '🤖 me' : r.sender_name || 'unknown';
+          const preview = r.content.length > 300 ? r.content.slice(0, 300) + '…' : r.content;
+          return `[${ts}] ${who}: ${preview}`;
+        });
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Last ${raw.results.length} message(s) (newest first):\n\n${lines.join('\n\n')}`,
+            },
+          ],
+        };
+      }
+    }
+
+    // Timed out — clean up query file
+    try {
+      fs.unlinkSync(queryFilePath);
+    } catch {
+      /* already processed or never written */
+    }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'Request timed out — the host did not respond in time. The nanoclaw service may be busy. Please try again.',
+        },
+      ],
+    };
+  },
+);
+
+// ─── Time Tool ────────────────────────────────────────────────────────────────
+
+server.tool(
+  'get_current_time',
+  `Get the current date and time in the server's configured timezone. Useful when you need to:
+- Make time-aware scheduling decisions
+- Reference the current date in a response
+- Check if a deadline has passed
+- Know the current day of the week
+
+The timezone is configured on the host (TZ env var). Defaults to UTC if not set.`,
+  {
+    utc: z
+      .boolean()
+      .optional()
+      .describe('Also include UTC time alongside local time (default: false)'),
+  },
+  async (args) => {
+    const tz = process.env.TZ || 'UTC';
+    const now = new Date();
+
+    const localStr = now.toLocaleString('en-US', {
+      timeZone: tz,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    });
+
+    let text = `Current time: ${localStr} (${tz})`;
+    if (args.utc) {
+      text += `\nUTC: ${now.toISOString()}`;
+    }
+
+    return {
+      content: [{ type: 'text' as const, text }],
     };
   },
 );

@@ -8,6 +8,7 @@ import { AvailableGroup } from './container-runner.js';
 import {
   createTask,
   deleteTask,
+  getRecentMessages,
   getTaskById,
   searchMessages,
   updateTask,
@@ -178,12 +179,16 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
-    // For search_messages
+    // For search_messages / get_recent_messages
     queryId?: string;
     query?: string;
     searchLimit?: number;
     fromDays?: number;
     includeBotMessages?: boolean;
+    recentLimit?: number;
+    recentFromDays?: number;
+    // For schedule_task / update_task
+    notifyOnSuccess?: boolean | string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -279,6 +284,8 @@ export async function processTaskIpc(
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
+          notify_on_success:
+            data.notifyOnSuccess === true || data.notifyOnSuccess === 'true',
         });
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
@@ -374,6 +381,9 @@ export async function processTaskIpc(
           (data.context_mode === 'group' || data.context_mode === 'isolated')
         )
           updates.context_mode = data.context_mode;
+        if (data.notifyOnSuccess !== undefined)
+          updates.notify_on_success =
+            data.notifyOnSuccess === true || data.notifyOnSuccess === 'true';
 
         // Recompute next_run if schedule changed
         if (data.schedule_type || data.schedule_value) {
@@ -539,6 +549,55 @@ export async function processTaskIpc(
       logger.info(
         { sourceGroup, queryId: data.queryId, resultCount: results.length },
         'search_messages: wrote response',
+      );
+      break;
+    }
+
+    case 'get_recent_messages': {
+      if (!data.queryId) {
+        logger.warn({ sourceGroup }, 'get_recent_messages missing queryId');
+        break;
+      }
+      const recentGroupEntry = Object.entries(registeredGroups).find(
+        ([, g]) => g.folder === sourceGroup,
+      );
+      if (!recentGroupEntry) {
+        logger.warn(
+          { sourceGroup },
+          'get_recent_messages: group not found in registered groups',
+        );
+        break;
+      }
+      const recentChatJid = recentGroupEntry[0];
+      const recentResults = getRecentMessages(
+        recentChatJid,
+        typeof data.recentLimit === 'number' ? data.recentLimit : 20,
+        typeof data.recentFromDays === 'number' ? data.recentFromDays : 7,
+        data.includeBotMessages === true,
+      );
+      const recentIpcBaseDir = path.join(DATA_DIR, 'ipc');
+      const recentResponsesDir = path.join(
+        recentIpcBaseDir,
+        sourceGroup,
+        'responses',
+      );
+      fs.mkdirSync(recentResponsesDir, { recursive: true });
+      const recentResponseFile = path.join(
+        recentResponsesDir,
+        `${data.queryId}.json`,
+      );
+      fs.writeFileSync(
+        recentResponseFile,
+        JSON.stringify({ results: recentResults }),
+        'utf-8',
+      );
+      logger.info(
+        {
+          sourceGroup,
+          queryId: data.queryId,
+          resultCount: recentResults.length,
+        },
+        'get_recent_messages: wrote response',
       );
       break;
     }

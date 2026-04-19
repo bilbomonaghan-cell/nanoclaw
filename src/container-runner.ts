@@ -697,6 +697,7 @@ export interface TaskSnapshot {
   last_run?: string | null;
   last_result?: string | null;
   created_at?: string;
+  notify_on_success?: boolean | null;
   recent_runs?: Array<{
     run_at: string;
     duration_ms: number;

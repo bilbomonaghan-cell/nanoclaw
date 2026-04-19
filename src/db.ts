@@ -159,6 +159,15 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Add notify_on_success column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN notify_on_success INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -408,8 +417,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -423,6 +432,7 @@ export function createTask(
     task.next_run,
     task.status,
     task.created_at,
+    task.notify_on_success ? 1 : 0,
   );
 }
 
@@ -458,6 +468,7 @@ export function updateTask(
       | 'status'
       | 'script'
       | 'context_mode'
+      | 'notify_on_success'
     >
   >,
 ): void {
@@ -491,6 +502,10 @@ export function updateTask(
   if (updates.context_mode !== undefined) {
     fields.push('context_mode = ?');
     values.push(updates.context_mode);
+  }
+  if (updates.notify_on_success !== undefined) {
+    fields.push('notify_on_success = ?');
+    values.push(updates.notify_on_success ? 1 : 0);
   }
 
   if (fields.length === 0) return;
@@ -758,6 +773,32 @@ export function searchMessages(
        LIMIT ?`,
     )
     .all(chatJid, likeQuery, sinceDate, limit);
+  return rows as MessageSearchResult[];
+}
+
+/**
+ * Retrieve the N most recent messages from a chat, newest-first.
+ * No keyword filter — use searchMessages() for keyword-based lookup.
+ */
+export function getRecentMessages(
+  chatJid: string,
+  limit: number = 20,
+  fromDays: number = 7,
+  includeBotMessages: boolean = false,
+): MessageSearchResult[] {
+  const sinceDate = new Date(Date.now() - fromDays * 86_400_000).toISOString();
+  const botFilter = includeBotMessages ? '' : 'AND is_bot_message = 0';
+  const rows = db
+    .prepare(
+      `SELECT id, sender_name, content, timestamp, is_from_me, is_bot_message
+       FROM messages
+       WHERE chat_jid = ?
+         AND timestamp >= ?
+         ${botFilter}
+       ORDER BY timestamp DESC
+       LIMIT ?`,
+    )
+    .all(chatJid, sinceDate, limit);
   return rows as MessageSearchResult[];
 }
 

@@ -216,6 +216,7 @@ async function runTask(
       last_run: t.last_run,
       last_result: t.last_result,
       created_at: t.created_at,
+      notify_on_success: t.notify_on_success ?? false,
       recent_runs: getRecentTaskRunLogs(t.id, 5).map((r) => ({
         run_at: r.run_at,
         duration_ms: r.duration_ms,
@@ -368,6 +369,23 @@ async function runTask(
         logger.warn(
           { taskId: task.id, notifyErr },
           'Failed to send task error notification',
+        );
+      });
+  }
+
+  // Optionally notify the group on task success
+  if (!error && task.notify_on_success) {
+    const shortId = task.id.slice(-12);
+    const durationSec = Math.round(durationMs / 1000);
+    await deps
+      .sendMessage(
+        task.chat_jid,
+        `✅ Task [${shortId}] completed in ${durationSec}s`,
+      )
+      .catch((notifyErr) => {
+        logger.warn(
+          { taskId: task.id, notifyErr },
+          'Failed to send task success notification',
         );
       });
   }

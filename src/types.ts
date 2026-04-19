@@ -71,6 +71,7 @@ export interface ScheduledTask {
   last_result: string | null;
   status: 'active' | 'paused' | 'completed';
   created_at: string;
+  notify_on_success?: boolean | null;
 }
 
 export interface TaskRunLog {
