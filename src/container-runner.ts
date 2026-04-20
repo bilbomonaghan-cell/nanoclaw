@@ -686,6 +686,7 @@ export async function runContainerAgent(
 
 export interface TaskSnapshot {
   id: string;
+  name?: string | null;
   groupFolder: string;
   prompt: string;
   script?: string | null;
@@ -699,6 +700,7 @@ export interface TaskSnapshot {
   created_at?: string;
   notify_on_success?: boolean | null;
   recent_runs?: Array<{
+    id?: number;
     run_at: string;
     duration_ms: number;
     status: string;

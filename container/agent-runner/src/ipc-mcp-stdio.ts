@@ -14,6 +14,7 @@ import { CronExpressionParser } from 'cron-parser';
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const RESPONSES_DIR = path.join(IPC_DIR, 'responses');
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
@@ -45,11 +46,14 @@ server.tool(
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+    target_jid: z.string().optional().describe('(Main group only) JID of a different registered group to send the message to. Defaults to the current group. Useful for broadcasting updates cross-group.'),
   },
   async (args) => {
+    // Non-main groups cannot send to other groups
+    const targetJid = isMain && args.target_jid ? args.target_jid : chatJid;
     const data: Record<string, string | undefined> = {
       type: 'message',
-      chatJid,
+      chatJid: targetJid,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,
@@ -58,7 +62,8 @@ server.tool(
 
     writeIpcFile(MESSAGES_DIR, data);
 
-    return { content: [{ type: 'text' as const, text: 'Message sent.' }] };
+    const targetNote = targetJid !== chatJid ? ` (→ ${targetJid})` : '';
+    return { content: [{ type: 'text' as const, text: `Message sent${targetNote}.` }] };
   },
 );
 
@@ -86,6 +91,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
 \u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
 \u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
   {
+    name: z.string().optional().describe('Short human-readable label for this task (e.g. "Daily weather briefing"). Shows in list_tasks instead of the raw ID prefix. Optional but recommended for recurring tasks.'),
     prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
     schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
@@ -160,11 +166,13 @@ echo "$prs"
     };
     if (args.script) data.script = args.script;
     if (args.notify_on_success) data.notifyOnSuccess = String(args.notify_on_success);
+    if (args.name) data.taskName = args.name;
 
     writeIpcFile(TASKS_DIR, data);
 
+    const nameDisplay = args.name ? ` "${args.name}"` : '';
     return {
-      content: [{ type: 'text' as const, text: `Task ${taskId} scheduled: ${args.schedule_type} - ${args.schedule_value}` }],
+      content: [{ type: 'text' as const, text: `Task${nameDisplay} ${taskId} scheduled: ${args.schedule_type} - ${args.schedule_value}` }],
     };
   },
 );
@@ -193,13 +201,14 @@ server.tool(
 
       const formatted = tasks
         .map(
-          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; context_mode?: string; script?: string; status: string; next_run?: string | null; last_run?: string | null }) => {
+          (t: { id: string; name?: string | null; prompt: string; schedule_type: string; schedule_value: string; context_mode?: string; script?: string; status: string; next_run?: string | null; last_run?: string | null }) => {
+            const label = t.name ? `"${t.name}" [${t.id}]` : `[${t.id}]`;
             const promptPreview = t.prompt.length > 60 ? t.prompt.slice(0, 60) + '…' : t.prompt;
             const mode = t.context_mode || 'group';
             const scriptFlag = t.script ? ' [script]' : '';
             const next = t.next_run ? t.next_run.slice(0, 16).replace('T', ' ') : 'N/A';
             const lastRun = t.last_run ? t.last_run.slice(0, 16).replace('T', ' ') : 'never';
-            return `- [${t.id}] ${promptPreview}\n  ${t.schedule_type}: ${t.schedule_value} | ${mode}${scriptFlag} | ${t.status} | next: ${next} | last: ${lastRun}`;
+            return `- ${label} ${promptPreview}\n  ${t.schedule_type}: ${t.schedule_value} | ${mode}${scriptFlag} | ${t.status} | next: ${next} | last: ${lastRun}`;
           },
         )
         .join('\n');
@@ -238,6 +247,7 @@ server.tool(
 
       const lines: string[] = [
         `**Task: ${task.id}**`,
+        ...(task.name ? [`Name: ${task.name}`] : []),
         `Status: ${task.status}`,
         `Schedule: ${task.schedule_type} — ${task.schedule_value}`,
         `Context mode: ${task.context_mode || 'group'}`,
@@ -263,7 +273,7 @@ server.tool(
       }
 
       // Show recent run history if available
-      const recentRuns = task.recent_runs as Array<{ run_at: string; duration_ms: number; status: string; error?: string | null }> | undefined;
+      const recentRuns = task.recent_runs as Array<{ id?: number; run_at: string; duration_ms: number; status: string; error?: string | null }> | undefined;
       if (recentRuns && recentRuns.length > 0) {
         lines.push(``, `**Recent runs (last ${recentRuns.length}):**`);
         for (const run of recentRuns) {
@@ -271,8 +281,10 @@ server.tool(
           const durationSec = (run.duration_ms / 1000).toFixed(1);
           const icon = run.status === 'success' ? '✅' : '❌';
           const errSuffix = run.error ? ` — ${run.error.slice(0, 80)}` : '';
-          lines.push(`  ${icon} ${ts} (${durationSec}s)${errSuffix}`);
+          const idHint = run.id ? ` [log #${run.id}]` : '';
+          lines.push(`  ${icon} ${ts} (${durationSec}s)${idHint}${errSuffix}`);
         }
+        lines.push(`  (Use get_task_log with a log ID to see full output)`);
       }
 
       return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
@@ -281,6 +293,81 @@ server.tool(
         content: [{ type: 'text' as const, text: `Error reading task: ${err instanceof Error ? err.message : String(err)}` }],
       };
     }
+  },
+);
+
+server.tool(
+  'get_task_log',
+  'Retrieve the full output (result or error) from a specific task run. Use get_task to see recent run IDs (log #N), then pass the ID here to fetch the complete output.',
+  {
+    log_id: z.number().int().describe('The run log ID shown as "log #N" in get_task output'),
+  },
+  async (args) => {
+    const queryId = `tl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `${RESPONSES_DIR}/${queryId}.json`;
+
+    fs.mkdirSync(ipcTasksDir, { recursive: true });
+    fs.writeFileSync(
+      `${ipcTasksDir}/get_task_log_${queryId}.json`,
+      JSON.stringify({
+        type: 'get_task_log',
+        queryId,
+        runLogId: args.log_id,
+      }),
+      'utf-8',
+    );
+
+    // Poll for response
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          log?: {
+            id?: number;
+            task_id: string;
+            run_at: string;
+            duration_ms: number;
+            status: string;
+            result?: string | null;
+            error?: string | null;
+          };
+          error?: string;
+        };
+        try { fs.unlinkSync(responseFile); } catch { /* ignore */ }
+
+        if (raw.error) {
+          return { content: [{ type: 'text' as const, text: `Error: ${raw.error}` }], isError: true };
+        }
+        const log = raw.log;
+        if (!log) {
+          return { content: [{ type: 'text' as const, text: 'No log entry returned.' }], isError: true };
+        }
+
+        const ts = log.run_at.slice(0, 19).replace('T', ' ');
+        const durationSec = (log.duration_ms / 1000).toFixed(1);
+        const icon = log.status === 'success' ? '✅' : '❌';
+        const lines: string[] = [
+          `**Task run log #${log.id ?? args.log_id}** — task ${log.task_id}`,
+          `${icon} ${ts} UTC | ${durationSec}s | ${log.status}`,
+          '',
+        ];
+        if (log.result) {
+          lines.push('**Output:**', log.result);
+        } else if (log.error) {
+          lines.push('**Error:**', log.error);
+        } else {
+          lines.push('(no output recorded)');
+        }
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      }
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: 'Timed out waiting for host response. Try again in a moment.' }],
+      isError: true,
+    };
   },
 );
 
@@ -374,6 +461,7 @@ server.tool(
   'Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.',
   {
     task_id: z.string().describe('The task ID to update'),
+    name: z.string().nullable().optional().describe('New human-readable label, or null to clear the current name'),
     prompt: z.string().optional().describe('New prompt for the task'),
     schedule_type: z.enum(['cron', 'interval', 'once']).optional().describe('New schedule type'),
     schedule_value: z.string().optional().describe('New schedule value (see schedule_task for format)'),
@@ -412,6 +500,7 @@ server.tool(
       isMain: String(isMain),
       timestamp: new Date().toISOString(),
     };
+    if (args.name !== undefined) data.taskName = args.name ?? '';    // empty string signals "clear name"
     if (args.prompt !== undefined) data.prompt = args.prompt;
     if (args.schedule_type !== undefined) data.schedule_type = args.schedule_type;
     if (args.schedule_value !== undefined) data.schedule_value = args.schedule_value;

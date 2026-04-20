@@ -59,6 +59,7 @@ export interface NewMessage {
 
 export interface ScheduledTask {
   id: string;
+  name?: string | null;
   group_folder: string;
   chat_jid: string;
   prompt: string;
@@ -75,6 +76,7 @@ export interface ScheduledTask {
 }
 
 export interface TaskRunLog {
+  id?: number;
   task_id: string;
   run_at: string;
   duration_ms: number;

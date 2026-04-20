@@ -205,6 +205,7 @@ async function runTask(
     isMain,
     tasks.map((t) => ({
       id: t.id,
+      name: t.name || undefined,
       groupFolder: t.group_folder,
       prompt: t.prompt,
       script: t.script || undefined,
@@ -218,6 +219,7 @@ async function runTask(
       created_at: t.created_at,
       notify_on_success: t.notify_on_success ?? false,
       recent_runs: getRecentTaskRunLogs(t.id, 5).map((r) => ({
+        id: r.id,
         run_at: r.run_at,
         duration_ms: r.duration_ms,
         status: r.status,

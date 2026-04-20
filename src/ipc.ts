@@ -10,6 +10,7 @@ import {
   deleteTask,
   getRecentMessages,
   getTaskById,
+  getTaskRunLogById,
   searchMessages,
   updateTask,
 } from './db.js';
@@ -189,6 +190,9 @@ export async function processTaskIpc(
     recentFromDays?: number;
     // For schedule_task / update_task
     notifyOnSuccess?: boolean | string;
+    taskName?: string;
+    // For get_task_log
+    runLogId?: number;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -274,6 +278,7 @@ export async function processTaskIpc(
             : 'isolated';
         createTask({
           id: taskId,
+          name: data.taskName || null,
           group_folder: targetFolder,
           chat_jid: targetJid,
           prompt: data.prompt,
@@ -367,6 +372,7 @@ export async function processTaskIpc(
         }
 
         const updates: Parameters<typeof updateTask>[1] = {};
+        if (data.taskName !== undefined) updates.name = data.taskName || null;
         if (data.prompt !== undefined) updates.prompt = data.prompt;
         if (data.schedule_type !== undefined)
           updates.schedule_type = data.schedule_type as
@@ -598,6 +604,60 @@ export async function processTaskIpc(
           resultCount: recentResults.length,
         },
         'get_recent_messages: wrote response',
+      );
+      break;
+    }
+
+    case 'get_task_log': {
+      if (!data.queryId || data.runLogId === undefined) {
+        logger.warn(
+          { sourceGroup },
+          'get_task_log missing queryId or runLogId',
+        );
+        break;
+      }
+      // Authorization: verify the run log belongs to a task owned by this group (or isMain)
+      const logEntry = getTaskRunLogById(data.runLogId);
+      if (!logEntry) {
+        const ipcBase = path.join(DATA_DIR, 'ipc');
+        const respDir = path.join(ipcBase, sourceGroup, 'responses');
+        fs.mkdirSync(respDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(respDir, `${data.queryId}.json`),
+          JSON.stringify({ error: 'Run log not found' }),
+          'utf-8',
+        );
+        break;
+      }
+      // Check ownership
+      const logTask = getTaskById(logEntry.task_id);
+      if (!logTask || (!isMain && logTask.group_folder !== sourceGroup)) {
+        logger.warn(
+          { sourceGroup, taskId: logEntry.task_id },
+          'get_task_log: unauthorized access attempt',
+        );
+        const ipcBase = path.join(DATA_DIR, 'ipc');
+        const respDir = path.join(ipcBase, sourceGroup, 'responses');
+        fs.mkdirSync(respDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(respDir, `${data.queryId}.json`),
+          JSON.stringify({ error: 'Unauthorized' }),
+          'utf-8',
+        );
+        break;
+      }
+
+      const ipcBaseDir = path.join(DATA_DIR, 'ipc');
+      const responsesDir = path.join(ipcBaseDir, sourceGroup, 'responses');
+      fs.mkdirSync(responsesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(responsesDir, `${data.queryId}.json`),
+        JSON.stringify({ log: logEntry }),
+        'utf-8',
+      );
+      logger.info(
+        { sourceGroup, queryId: data.queryId, runLogId: data.runLogId },
+        'get_task_log: wrote response',
       );
       break;
     }

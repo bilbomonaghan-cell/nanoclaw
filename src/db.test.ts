@@ -11,6 +11,7 @@ import {
   getRecentMessages,
   getRecentTaskRunLogs,
   getTaskById,
+  getTaskRunLogById,
   logTaskRun,
   pruneTaskRunLogs,
   searchMessages,
@@ -827,5 +828,114 @@ describe('getRecentMessages', () => {
 
     const results = getRecentMessages(jid, 20, 7);
     expect(results).toHaveLength(0);
+  });
+});
+
+// --- Task name field ---
+
+describe('task name field', () => {
+  function makeNamedTask(id: string, name?: string | null) {
+    createTask({
+      id,
+      name: name ?? null,
+      group_folder: 'main',
+      chat_jid: 'group@g.us',
+      prompt: 'test task',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      next_run: '2024-06-01T09:00:00.000Z',
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+  }
+
+  it('creates task with a name and retrieves it', () => {
+    makeNamedTask('name-task-1', 'Daily weather briefing');
+    const task = getTaskById('name-task-1');
+    expect(task).toBeDefined();
+    expect(task!.name).toBe('Daily weather briefing');
+  });
+
+  it('creates task without a name (null)', () => {
+    makeNamedTask('name-task-2', null);
+    const task = getTaskById('name-task-2');
+    expect(task).toBeDefined();
+    expect(task!.name == null).toBe(true);
+  });
+
+  it('updates name via updateTask', () => {
+    makeNamedTask('name-task-3', 'Original name');
+    updateTask('name-task-3', { name: 'Updated name' });
+    const task = getTaskById('name-task-3');
+    expect(task!.name).toBe('Updated name');
+  });
+
+  it('clears name by setting it to null', () => {
+    makeNamedTask('name-task-4', 'Has a name');
+    updateTask('name-task-4', { name: null });
+    const task = getTaskById('name-task-4');
+    expect(task!.name == null).toBe(true);
+  });
+});
+
+// --- getTaskRunLogById ---
+
+describe('getTaskRunLogById', () => {
+  function makeTask(id: string) {
+    createTask({
+      id,
+      group_folder: 'main',
+      chat_jid: 'group@g.us',
+      prompt: 'test task',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      next_run: '2024-06-01T09:00:00.000Z',
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+    });
+  }
+
+  it('returns null for a non-existent log ID', () => {
+    const log = getTaskRunLogById(999999);
+    expect(log).toBeNull();
+  });
+
+  it('returns the correct log entry by ID', () => {
+    makeTask('log-by-id-1');
+    logTaskRun({
+      task_id: 'log-by-id-1',
+      run_at: '2024-05-01T09:00:00.000Z',
+      duration_ms: 1234,
+      status: 'success',
+      result: 'Full output here',
+      error: null,
+    });
+
+    // The only way to get the inserted ID is via getRecentTaskRunLogs which returns the row including id
+    const logs = getRecentTaskRunLogs('log-by-id-1', 1);
+    expect(logs).toHaveLength(1);
+    const insertedId = logs[0].id;
+    expect(insertedId).toBeDefined();
+
+    const found = getTaskRunLogById(insertedId!);
+    expect(found).not.toBeNull();
+    expect(found!.task_id).toBe('log-by-id-1');
+    expect(found!.result).toBe('Full output here');
+    expect(found!.duration_ms).toBe(1234);
+  });
+
+  it('distinguishes between different log entries', () => {
+    makeTask('log-by-id-2');
+    logTaskRun({ task_id: 'log-by-id-2', run_at: '2024-05-01T09:00:00.000Z', duration_ms: 100, status: 'success', result: 'first', error: null });
+    logTaskRun({ task_id: 'log-by-id-2', run_at: '2024-05-02T09:00:00.000Z', duration_ms: 200, status: 'error', result: null, error: 'oops' });
+
+    const logs = getRecentTaskRunLogs('log-by-id-2', 2);
+    const [newer, older] = logs; // newest-first
+
+    expect(getTaskRunLogById(newer.id!)!.result).toBeNull();
+    expect(getTaskRunLogById(newer.id!)!.error).toBe('oops');
+    expect(getTaskRunLogById(older.id!)!.result).toBe('first');
   });
 });

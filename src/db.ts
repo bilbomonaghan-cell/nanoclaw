@@ -168,6 +168,15 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add name column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN name TEXT DEFAULT NULL`,
+    );
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -417,11 +426,12 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, name, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
+    task.name || null,
     task.group_folder,
     task.chat_jid,
     task.prompt,
@@ -461,6 +471,7 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
+      | 'name'
       | 'prompt'
       | 'schedule_type'
       | 'schedule_value'
@@ -475,6 +486,10 @@ export function updateTask(
   const fields: string[] = [];
   const values: unknown[] = [];
 
+  if (updates.name !== undefined) {
+    fields.push('name = ?');
+    values.push(updates.name ?? null);
+  }
   if (updates.prompt !== undefined) {
     fields.push('prompt = ?');
     values.push(updates.prompt);
@@ -578,6 +593,18 @@ export function getRecentTaskRunLogs(
       'SELECT * FROM task_run_logs WHERE task_id = ? ORDER BY run_at DESC LIMIT ?',
     )
     .all(taskId, limit) as TaskRunLog[];
+}
+
+/**
+ * Retrieve a single task run log by its autoincrement ID.
+ * Returns null if not found.
+ */
+export function getTaskRunLogById(id: number): TaskRunLog | null {
+  return (
+    (db
+      .prepare('SELECT * FROM task_run_logs WHERE id = ?')
+      .get(id) as TaskRunLog | undefined) ?? null
+  );
 }
 
 /**
