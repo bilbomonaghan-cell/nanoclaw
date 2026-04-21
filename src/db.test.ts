@@ -928,8 +928,22 @@ describe('getTaskRunLogById', () => {
 
   it('distinguishes between different log entries', () => {
     makeTask('log-by-id-2');
-    logTaskRun({ task_id: 'log-by-id-2', run_at: '2024-05-01T09:00:00.000Z', duration_ms: 100, status: 'success', result: 'first', error: null });
-    logTaskRun({ task_id: 'log-by-id-2', run_at: '2024-05-02T09:00:00.000Z', duration_ms: 200, status: 'error', result: null, error: 'oops' });
+    logTaskRun({
+      task_id: 'log-by-id-2',
+      run_at: '2024-05-01T09:00:00.000Z',
+      duration_ms: 100,
+      status: 'success',
+      result: 'first',
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'log-by-id-2',
+      run_at: '2024-05-02T09:00:00.000Z',
+      duration_ms: 200,
+      status: 'error',
+      result: null,
+      error: 'oops',
+    });
 
     const logs = getRecentTaskRunLogs('log-by-id-2', 2);
     const [newer, older] = logs; // newest-first

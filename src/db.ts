@@ -601,9 +601,9 @@ export function getRecentTaskRunLogs(
  */
 export function getTaskRunLogById(id: number): TaskRunLog | null {
   return (
-    (db
-      .prepare('SELECT * FROM task_run_logs WHERE id = ?')
-      .get(id) as TaskRunLog | undefined) ?? null
+    (db.prepare('SELECT * FROM task_run_logs WHERE id = ?').get(id) as
+      | TaskRunLog
+      | undefined) ?? null
   );
 }
 
