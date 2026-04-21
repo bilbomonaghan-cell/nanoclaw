@@ -6,6 +6,7 @@ import {
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
+  getChatStats,
   getMessagesSince,
   getNewMessages,
   getRecentMessages,
@@ -951,5 +952,102 @@ describe('getTaskRunLogById', () => {
     expect(getTaskRunLogById(newer.id!)!.result).toBeNull();
     expect(getTaskRunLogById(newer.id!)!.error).toBe('oops');
     expect(getTaskRunLogById(older.id!)!.result).toBe('first');
+  });
+});
+
+// --- getChatStats ---
+
+describe('getChatStats', () => {
+  const jid = 'stats-test@g.us';
+
+  function storeMsg(
+    id: string,
+    opts: {
+      sender?: string;
+      sender_name?: string;
+      is_bot_message?: boolean;
+      daysAgo?: number;
+    } = {},
+  ) {
+    const daysAgo = opts.daysAgo ?? 0;
+    const ts = new Date(Date.now() - daysAgo * 86_400_000).toISOString();
+    storeMessage({
+      id,
+      chat_jid: jid,
+      sender: opts.sender ?? 'sender1',
+      sender_name: opts.sender_name ?? 'Alice',
+      content: `message ${id}`,
+      timestamp: ts,
+      is_from_me: false,
+      is_bot_message: opts.is_bot_message ?? false,
+    });
+  }
+
+  it('returns zero stats for an empty chat', () => {
+    storeChatMetadata(jid, 'Stats Test', jid, 'test', false);
+    const stats = getChatStats(jid, 30);
+    expect(stats.total_messages).toBe(0);
+    expect(stats.unique_senders).toBe(0);
+    expect(stats.first_message).toBeNull();
+    expect(stats.last_message).toBeNull();
+    expect(stats.top_senders).toHaveLength(0);
+    expect(stats.days_covered).toBe(30);
+  });
+
+  it('counts messages and unique senders correctly', () => {
+    storeChatMetadata(jid, 'Stats Test', jid, 'test', false);
+    storeMsg('cs1', { sender: 'u1', sender_name: 'Alice' });
+    storeMsg('cs2', { sender: 'u1', sender_name: 'Alice' });
+    storeMsg('cs3', { sender: 'u2', sender_name: 'Bob' });
+
+    const stats = getChatStats(jid, 30);
+    expect(stats.total_messages).toBe(3);
+    expect(stats.unique_senders).toBe(2);
+    expect(stats.first_message).not.toBeNull();
+    expect(stats.last_message).not.toBeNull();
+  });
+
+  it('excludes bot messages', () => {
+    storeChatMetadata(jid, 'Stats Test', jid, 'test', false);
+    storeMsg('cs4', { sender: 'u1', sender_name: 'Alice' });
+    storeMsg('cs5', { sender: 'bot', sender_name: 'Bot', is_bot_message: true });
+    storeMsg('cs6', { sender: 'u2', sender_name: 'Bob' });
+
+    const stats = getChatStats(jid, 30);
+    expect(stats.total_messages).toBe(2);
+    expect(stats.unique_senders).toBe(2);
+  });
+
+  it('respects fromDays cutoff', () => {
+    storeChatMetadata(jid, 'Stats Test', jid, 'test', false);
+    storeMsg('cs7', { sender: 'u1', sender_name: 'Alice', daysAgo: 5 });
+    storeMsg('cs8', { sender: 'u2', sender_name: 'Bob', daysAgo: 60 });
+
+    const recent = getChatStats(jid, 30);
+    expect(recent.total_messages).toBe(1);
+
+    const allTime = getChatStats(jid, 90);
+    expect(allTime.total_messages).toBe(2);
+    expect(allTime.days_covered).toBe(90);
+  });
+
+  it('returns correct top_senders ranking', () => {
+    storeChatMetadata(jid, 'Stats Test', jid, 'test', false);
+    // Alice sends 3 messages, Bob sends 2, Carol sends 1
+    storeMsg('cs9', { sender: 'u1', sender_name: 'Alice' });
+    storeMsg('cs10', { sender: 'u1', sender_name: 'Alice' });
+    storeMsg('cs11', { sender: 'u1', sender_name: 'Alice' });
+    storeMsg('cs12', { sender: 'u2', sender_name: 'Bob' });
+    storeMsg('cs13', { sender: 'u2', sender_name: 'Bob' });
+    storeMsg('cs14', { sender: 'u3', sender_name: 'Carol' });
+
+    const stats = getChatStats(jid, 30);
+    expect(stats.top_senders).toHaveLength(3);
+    expect(stats.top_senders[0].sender_name).toBe('Alice');
+    expect(stats.top_senders[0].count).toBe(3);
+    expect(stats.top_senders[1].sender_name).toBe('Bob');
+    expect(stats.top_senders[1].count).toBe(2);
+    expect(stats.top_senders[2].sender_name).toBe('Carol');
+    expect(stats.top_senders[2].count).toBe(1);
   });
 });

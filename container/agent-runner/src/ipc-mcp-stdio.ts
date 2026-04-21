@@ -179,9 +179,12 @@ echo "$prs"
 
 server.tool(
   'list_tasks',
-  "List all scheduled tasks. From main: shows all tasks. From other groups: shows only that group's tasks.",
-  {},
-  async () => {
+  "List all scheduled tasks. From main: shows all tasks. From other groups: shows only that group's tasks. Supports optional filtering by status and keyword.",
+  {
+    status: z.enum(['active', 'paused']).optional().describe('Filter by task status. Omit to show all tasks.'),
+    keyword: z.string().optional().describe('Filter tasks whose name or prompt contains this keyword (case-insensitive).'),
+  },
+  async (args) => {
     const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
 
     try {
@@ -195,11 +198,23 @@ server.tool(
         ? allTasks
         : allTasks.filter((t: { groupFolder: string }) => t.groupFolder === groupFolder);
 
-      if (tasks.length === 0) {
+      // Apply optional status filter
+      let filtered = tasks;
+      if (args.status) {
+        filtered = filtered.filter((t: { status: string }) => t.status === args.status);
+      }
+      if (args.keyword) {
+        const kw = args.keyword.toLowerCase();
+        filtered = filtered.filter((t: { name?: string | null; prompt: string }) =>
+          (t.name && t.name.toLowerCase().includes(kw)) || t.prompt.toLowerCase().includes(kw)
+        );
+      }
+
+      if (filtered.length === 0) {
         return { content: [{ type: 'text' as const, text: 'No scheduled tasks found.' }] };
       }
 
-      const formatted = tasks
+      const formatted = filtered
         .map(
           (t: { id: string; name?: string | null; prompt: string; schedule_type: string; schedule_value: string; context_mode?: string; script?: string; status: string; next_run?: string | null; last_run?: string | null }) => {
             const label = t.name ? `"${t.name}" [${t.id}]` : `[${t.id}]`;
@@ -213,7 +228,7 @@ server.tool(
         )
         .join('\n');
 
-      return { content: [{ type: 'text' as const, text: `Scheduled tasks (${tasks.length}):\n\n${formatted}` }] };
+      return { content: [{ type: 'text' as const, text: `Scheduled tasks (${filtered.length}):\n\n${formatted}` }] };
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}` }],
@@ -1159,6 +1174,72 @@ Note: Only retrieves messages stored in the host database (typically the last se
           text: 'Request timed out — the host did not respond in time. The nanoclaw service may be busy. Please try again.',
         },
       ],
+    };
+  },
+);
+
+server.tool(
+  'get_chat_stats',
+  'Get aggregate statistics for this group\'s conversation history: total message count, unique senders, date range, and top senders by message volume. Useful for understanding group activity and engagement.',
+  {
+    from_days: z.number().optional().describe('How many days back to include (default: 30). Use a larger value for long-term patterns.'),
+  },
+  async (args) => {
+    const queryId = `stats-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const data = {
+      type: 'get_chat_stats',
+      queryId,
+      groupFolder,
+      isMain,
+      fromDays: args.from_days ?? 30,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    // Poll for response (up to 8s)
+    const responseFile = path.join(RESPONSES_DIR, `${queryId}.json`);
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = fs.readFileSync(responseFile, 'utf-8');
+        fs.unlinkSync(responseFile);
+        const stats = JSON.parse(raw) as {
+          total_messages: number;
+          unique_senders: number;
+          first_message: string | null;
+          last_message: string | null;
+          top_senders: Array<{ sender_name: string; count: number }>;
+          days_covered: number;
+        };
+
+        const lines: string[] = [
+          `**Chat statistics (last ${stats.days_covered} days)**`,
+          ``,
+          `Total messages: ${stats.total_messages}`,
+          `Unique senders: ${stats.unique_senders}`,
+          `First message: ${stats.first_message ? stats.first_message.slice(0, 16).replace('T', ' ') + ' UTC' : 'N/A'}`,
+          `Last message: ${stats.last_message ? stats.last_message.slice(0, 16).replace('T', ' ') + ' UTC' : 'N/A'}`,
+        ];
+
+        if (stats.top_senders.length > 0) {
+          lines.push(``, `**Top senders:**`);
+          for (const s of stats.top_senders) {
+            const pct = stats.total_messages > 0
+              ? ` (${Math.round((s.count / stats.total_messages) * 100)}%)`
+              : '';
+            lines.push(`  ${s.sender_name || 'Unknown'}: ${s.count} msgs${pct}`);
+          }
+        }
+
+        return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+      }
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: 'Timed out waiting for host response. Try again in a moment.' }],
+      isError: true,
     };
   },
 );

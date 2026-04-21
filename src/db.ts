@@ -829,6 +829,63 @@ export function getRecentMessages(
   return rows as MessageSearchResult[];
 }
 
+export interface ChatStats {
+  total_messages: number;
+  unique_senders: number;
+  first_message: string | null;
+  last_message: string | null;
+  top_senders: Array<{ sender_name: string; count: number }>;
+  days_covered: number;
+}
+
+/**
+ * Aggregate statistics for a chat over a given time window.
+ */
+export function getChatStats(
+  chatJid: string,
+  fromDays: number = 30,
+): ChatStats {
+  const sinceDate = new Date(Date.now() - fromDays * 86_400_000).toISOString();
+
+  const summary = db
+    .prepare(
+      `SELECT
+         COUNT(*) as total_messages,
+         COUNT(DISTINCT sender) as unique_senders,
+         MIN(timestamp) as first_message,
+         MAX(timestamp) as last_message
+       FROM messages
+       WHERE chat_jid = ?
+         AND timestamp >= ?
+         AND is_bot_message = 0`,
+    )
+    .get(chatJid, sinceDate) as {
+    total_messages: number;
+    unique_senders: number;
+    first_message: string | null;
+    last_message: string | null;
+  };
+
+  const topSenders = db
+    .prepare(
+      `SELECT sender_name, COUNT(*) as count
+       FROM messages
+       WHERE chat_jid = ?
+         AND timestamp >= ?
+         AND is_bot_message = 0
+       GROUP BY sender_name
+       ORDER BY count DESC
+       LIMIT 10`,
+    )
+    .all(chatJid, sinceDate) as Array<{ sender_name: string; count: number }>;
+
+  return {
+    ...summary,
+    top_senders: topSenders,
+    days_covered: fromDays,
+  };
+}
+
 // --- JSON migration ---
 
 function migrateJsonState(): void {

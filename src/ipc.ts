@@ -8,6 +8,7 @@ import { AvailableGroup } from './container-runner.js';
 import {
   createTask,
   deleteTask,
+  getChatStats,
   getRecentMessages,
   getTaskById,
   getTaskRunLogById,
@@ -604,6 +605,39 @@ export async function processTaskIpc(
           resultCount: recentResults.length,
         },
         'get_recent_messages: wrote response',
+      );
+      break;
+    }
+
+    case 'get_chat_stats': {
+      const queryId = data.queryId as string;
+      if (!queryId) break;
+      const statsGroupEntry = Object.entries(registeredGroups).find(
+        ([, g]) =>
+          isMain && data.groupFolder
+            ? g.folder === data.groupFolder
+            : g.folder === sourceGroup,
+      );
+      if (!statsGroupEntry) {
+        logger.warn({ sourceGroup }, 'get_chat_stats: group not found');
+        break;
+      }
+      const statsChatJid = statsGroupEntry[0];
+      const fromDays =
+        typeof data.fromDays === 'number' ? data.fromDays : 30;
+      const stats = getChatStats(statsChatJid, fromDays);
+      const statsIpcBaseDir = path.join(DATA_DIR, 'ipc');
+      const statsResponsesDir = path.join(
+        statsIpcBaseDir,
+        sourceGroup,
+        'responses',
+      );
+      fs.mkdirSync(statsResponsesDir, { recursive: true });
+      const statsResponseFile = path.join(statsResponsesDir, `${queryId}.json`);
+      fs.writeFileSync(statsResponseFile, JSON.stringify(stats), 'utf-8');
+      logger.info(
+        { sourceGroup, queryId },
+        'get_chat_stats: wrote response',
       );
       break;
     }
