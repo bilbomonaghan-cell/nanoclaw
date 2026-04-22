@@ -1395,6 +1395,292 @@ server.tool(
   },
 );
 
+// ─── get_instructions ────────────────────────────────────────────────────────
+
+server.tool(
+  'get_instructions',
+  "Read this group's CLAUDE.md instructions file. Useful for reviewing current behaviour rules, memory notes, or checking what instructions are in effect.",
+  {},
+  async () => {
+    const instructionsPath = '/workspace/group/CLAUDE.md';
+    if (!fs.existsSync(instructionsPath)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'No CLAUDE.md found at /workspace/group/CLAUDE.md — this group has no custom instructions yet.',
+          },
+        ],
+      };
+    }
+    const content = fs.readFileSync(instructionsPath, 'utf-8');
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Contents of /workspace/group/CLAUDE.md (${content.length} chars):\n\n${content}`,
+        },
+      ],
+    };
+  },
+);
+
+// ─── update_instructions ─────────────────────────────────────────────────────
+
+server.tool(
+  'update_instructions',
+  "Update this group's CLAUDE.md instructions file. Use `append` to add a section at the end, `replace` to overwrite the whole file, or `replace_section` to update one markdown section (by heading text) without touching the rest.",
+  {
+    mode: z
+      .enum(['append', 'replace', 'replace_section'])
+      .describe(
+        '`append`: add text to end of file. `replace`: overwrite the whole file. `replace_section`: find a heading and replace only that section\'s content.',
+      ),
+    text: z.string().describe('The text to append / the new file content / the new section body depending on mode.'),
+    section_heading: z
+      .string()
+      .optional()
+      .describe('Required for replace_section mode. The exact heading text (e.g. "## Notes"). The heading line itself is preserved; only the content beneath it is replaced.'),
+  },
+  async (args) => {
+    const instructionsPath = '/workspace/group/CLAUDE.md';
+
+    if (args.mode === 'replace') {
+      fs.writeFileSync(instructionsPath, args.text, 'utf-8');
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `CLAUDE.md replaced (${args.text.length} chars).`,
+          },
+        ],
+      };
+    }
+
+    if (args.mode === 'append') {
+      const existing = fs.existsSync(instructionsPath)
+        ? fs.readFileSync(instructionsPath, 'utf-8')
+        : '';
+      const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n' : '';
+      const newContent = existing + separator + args.text;
+      fs.writeFileSync(instructionsPath, newContent, 'utf-8');
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Appended ${args.text.length} chars to CLAUDE.md (total: ${newContent.length} chars).`,
+          },
+        ],
+      };
+    }
+
+    // replace_section
+    if (!args.section_heading) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'replace_section mode requires a section_heading.',
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    if (!fs.existsSync(instructionsPath)) {
+      // File doesn't exist — create it with just the section
+      const newContent = `${args.section_heading}\n\n${args.text}`;
+      fs.writeFileSync(instructionsPath, newContent, 'utf-8');
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `CLAUDE.md created with section "${args.section_heading}".`,
+          },
+        ],
+      };
+    }
+
+    const existing = fs.readFileSync(instructionsPath, 'utf-8');
+    const lines = existing.split('\n');
+
+    // Determine heading depth from the provided heading (e.g. "## Notes" → depth 2)
+    const headingMatch = args.section_heading.match(/^(#{1,6})\s/);
+    const headingDepth = headingMatch ? headingMatch[1].length : 1;
+
+    // Find the line index of the target heading
+    const headingLineIdx = lines.findIndex(
+      (l) => l.trim() === args.section_heading.trim(),
+    );
+
+    if (headingLineIdx === -1) {
+      // Heading not found — append as a new section
+      const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n\n' : '\n';
+      const newContent =
+        existing + separator + args.section_heading + '\n\n' + args.text;
+      fs.writeFileSync(instructionsPath, newContent, 'utf-8');
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Section "${args.section_heading}" not found — appended as a new section.`,
+          },
+        ],
+      };
+    }
+
+    // Find the end of this section (next heading of same or higher level, or EOF)
+    let sectionEndIdx = lines.length;
+    for (let i = headingLineIdx + 1; i < lines.length; i++) {
+      const nextHeadingMatch = lines[i].match(/^(#{1,6})\s/);
+      if (nextHeadingMatch && nextHeadingMatch[1].length <= headingDepth) {
+        sectionEndIdx = i;
+        break;
+      }
+    }
+
+    // Rebuild: keep heading, replace body, keep rest
+    const before = lines.slice(0, headingLineIdx + 1).join('\n');
+    const after = lines.slice(sectionEndIdx).join('\n');
+    const newContent =
+      before + '\n\n' + args.text + (after.length > 0 ? '\n\n' + after : '\n');
+    fs.writeFileSync(instructionsPath, newContent, 'utf-8');
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Section "${args.section_heading}" updated in CLAUDE.md.`,
+        },
+      ],
+    };
+  },
+);
+
+// ─── get_task_stats ───────────────────────────────────────────────────────────
+
+server.tool(
+  'get_task_stats',
+  "Get a summary of this group's scheduled task run history: total runs, success/failure counts, and a per-task breakdown. Useful for monitoring task reliability over time.",
+  {
+    from_days: z
+      .number()
+      .optional()
+      .describe('How many days of history to include (default: 7).'),
+    group_folder: z
+      .string()
+      .optional()
+      .describe('(Main group only) folder of a different group to query.'),
+  },
+  async (args) => {
+    const queryId = `ts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `/workspace/ipc/responses/${queryId}.json`;
+
+    const queryFilePath = `${ipcTasksDir}/get_task_stats_${queryId}.json`;
+    fs.writeFileSync(
+      queryFilePath,
+      JSON.stringify({
+        type: 'get_task_stats',
+        queryId,
+        fromDays: args.from_days ?? 7,
+        groupFolder: args.group_folder,
+      }),
+      'utf-8',
+    );
+
+    // Poll for response (8s)
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          total_runs: number;
+          succeeded: number;
+          failed: number;
+          active_tasks: number;
+          days_covered: number;
+          by_task: Array<{
+            task_id: string;
+            name: string | null;
+            total_runs: number;
+            succeeded: number;
+            failed: number;
+            last_run: string | null;
+          }>;
+        };
+
+        try {
+          fs.unlinkSync(responseFile);
+        } catch {
+          /* best-effort */
+        }
+
+        const fromDays = args.from_days ?? 7;
+
+        if (raw.total_runs === 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `No task runs recorded in the last ${fromDays} day${fromDays === 1 ? '' : 's'}.`,
+              },
+            ],
+          };
+        }
+
+        const successRate =
+          raw.total_runs > 0
+            ? Math.round((raw.succeeded / raw.total_runs) * 100)
+            : 0;
+
+        const header = [
+          `Task run stats — last ${fromDays} day${fromDays === 1 ? '' : 's'}`,
+          `Total runs: ${raw.total_runs}  ✅ ${raw.succeeded}  ❌ ${raw.failed}  (${successRate}% success)`,
+          `Active tasks: ${raw.active_tasks}`,
+        ].join('\n');
+
+        const taskLines = raw.by_task.map((t) => {
+          const label = t.name ? `"${t.name}"` : t.task_id;
+          const taskRate =
+            t.total_runs > 0
+              ? Math.round((t.succeeded / t.total_runs) * 100)
+              : 0;
+          const lastTs = t.last_run
+            ? t.last_run.slice(0, 16).replace('T', ' ')
+            : '—';
+          return `  ${label}: ${t.total_runs} run${t.total_runs === 1 ? '' : 's'}, ${taskRate}% ok, last: ${lastTs}`;
+        });
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `${header}\n\nBy task:\n${taskLines.join('\n')}`,
+            },
+          ],
+        };
+      }
+    }
+
+    // Timed out
+    try {
+      fs.unlinkSync(queryFilePath);
+    } catch {
+      /* already processed */
+    }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'get_task_stats timed out — the host did not respond. Try again shortly.',
+        },
+      ],
+      isError: true,
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

@@ -12,6 +12,7 @@ import {
   getRecentMessages,
   getTaskById,
   getTaskRunLogById,
+  getTaskStats,
   searchMessages,
   updateTask,
 } from './db.js';
@@ -612,19 +613,17 @@ export async function processTaskIpc(
     case 'get_chat_stats': {
       const queryId = data.queryId as string;
       if (!queryId) break;
-      const statsGroupEntry = Object.entries(registeredGroups).find(
-        ([, g]) =>
-          isMain && data.groupFolder
-            ? g.folder === data.groupFolder
-            : g.folder === sourceGroup,
+      const statsGroupEntry = Object.entries(registeredGroups).find(([, g]) =>
+        isMain && data.groupFolder
+          ? g.folder === data.groupFolder
+          : g.folder === sourceGroup,
       );
       if (!statsGroupEntry) {
         logger.warn({ sourceGroup }, 'get_chat_stats: group not found');
         break;
       }
       const statsChatJid = statsGroupEntry[0];
-      const fromDays =
-        typeof data.fromDays === 'number' ? data.fromDays : 30;
+      const fromDays = typeof data.fromDays === 'number' ? data.fromDays : 30;
       const stats = getChatStats(statsChatJid, fromDays);
       const statsIpcBaseDir = path.join(DATA_DIR, 'ipc');
       const statsResponsesDir = path.join(
@@ -635,9 +634,32 @@ export async function processTaskIpc(
       fs.mkdirSync(statsResponsesDir, { recursive: true });
       const statsResponseFile = path.join(statsResponsesDir, `${queryId}.json`);
       fs.writeFileSync(statsResponseFile, JSON.stringify(stats), 'utf-8');
+      logger.info({ sourceGroup, queryId }, 'get_chat_stats: wrote response');
+      break;
+    }
+
+    case 'get_task_stats': {
+      const tsQueryId = data.queryId as string;
+      if (!tsQueryId) break;
+      const fromDays = typeof data.fromDays === 'number' ? data.fromDays : 7;
+      // Main can request stats for any group; others get their own
+      const statsGroupFolder =
+        isMain && typeof data.groupFolder === 'string'
+          ? data.groupFolder
+          : sourceGroup;
+      const stats = getTaskStats(statsGroupFolder, fromDays);
+      const tsIpcBaseDir = path.join(DATA_DIR, 'ipc');
+      const tsResponsesDir = path.join(
+        tsIpcBaseDir,
+        sourceGroup,
+        'responses',
+      );
+      fs.mkdirSync(tsResponsesDir, { recursive: true });
+      const tsResponseFile = path.join(tsResponsesDir, `${tsQueryId}.json`);
+      fs.writeFileSync(tsResponseFile, JSON.stringify(stats), 'utf-8');
       logger.info(
-        { sourceGroup, queryId },
-        'get_chat_stats: wrote response',
+        { sourceGroup, queryId: tsQueryId },
+        'get_task_stats: wrote response',
       );
       break;
     }

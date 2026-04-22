@@ -13,6 +13,7 @@ import {
   getRecentTaskRunLogs,
   getTaskById,
   getTaskRunLogById,
+  getTaskStats,
   logTaskRun,
   pruneTaskRunLogs,
   searchMessages,
@@ -1010,7 +1011,11 @@ describe('getChatStats', () => {
   it('excludes bot messages', () => {
     storeChatMetadata(jid, 'Stats Test', jid, 'test', false);
     storeMsg('cs4', { sender: 'u1', sender_name: 'Alice' });
-    storeMsg('cs5', { sender: 'bot', sender_name: 'Bot', is_bot_message: true });
+    storeMsg('cs5', {
+      sender: 'bot',
+      sender_name: 'Bot',
+      is_bot_message: true,
+    });
     storeMsg('cs6', { sender: 'u2', sender_name: 'Bob' });
 
     const stats = getChatStats(jid, 30);
@@ -1049,5 +1054,99 @@ describe('getChatStats', () => {
     expect(stats.top_senders[1].count).toBe(2);
     expect(stats.top_senders[2].sender_name).toBe('Carol');
     expect(stats.top_senders[2].count).toBe(1);
+  });
+});
+
+// --- getTaskStats ---
+
+function makeTaskForStats(id: string, folder: string) {
+  createTask({
+    id,
+    group_folder: folder,
+    chat_jid: 'stats@g.us',
+    prompt: 'stats task',
+    schedule_type: 'cron',
+    schedule_value: '0 9 * * *',
+    context_mode: 'isolated',
+    next_run: '2024-06-01T09:00:00.000Z',
+    status: 'active',
+    created_at: '2024-01-01T00:00:00.000Z',
+  });
+}
+
+describe('getTaskStats', () => {
+  it('returns zeroes when no runs exist', () => {
+    makeTaskForStats('stats-task-0', 'gfolder-a');
+    const stats = getTaskStats('gfolder-a', 7);
+    expect(stats.total_runs).toBe(0);
+    expect(stats.succeeded).toBe(0);
+    expect(stats.failed).toBe(0);
+    expect(stats.active_tasks).toBe(0);
+    expect(stats.by_task).toHaveLength(0);
+  });
+
+  it('counts success and error runs correctly', () => {
+    makeTaskForStats('stats-task-1', 'gfolder-b');
+    const now = new Date().toISOString();
+    logTaskRun({ task_id: 'stats-task-1', run_at: now, duration_ms: 500, status: 'success', result: 'ok', error: null });
+    logTaskRun({ task_id: 'stats-task-1', run_at: now, duration_ms: 600, status: 'error', result: null, error: 'boom' });
+    logTaskRun({ task_id: 'stats-task-1', run_at: now, duration_ms: 700, status: 'success', result: 'ok2', error: null });
+
+    const stats = getTaskStats('gfolder-b', 7);
+    expect(stats.total_runs).toBe(3);
+    expect(stats.succeeded).toBe(2);
+    expect(stats.failed).toBe(1);
+    expect(stats.active_tasks).toBe(1);
+    expect(stats.by_task).toHaveLength(1);
+    expect(stats.by_task[0].task_id).toBe('stats-task-1');
+    expect(stats.by_task[0].total_runs).toBe(3);
+    expect(stats.by_task[0].succeeded).toBe(2);
+    expect(stats.by_task[0].failed).toBe(1);
+  });
+
+  it('only includes runs from the specified time window', () => {
+    makeTaskForStats('stats-task-2', 'gfolder-c');
+    const recent = new Date().toISOString();
+    const old = new Date(Date.now() - 20 * 86_400_000).toISOString();
+    logTaskRun({ task_id: 'stats-task-2', run_at: recent, duration_ms: 100, status: 'success', result: 'r', error: null });
+    logTaskRun({ task_id: 'stats-task-2', run_at: old, duration_ms: 200, status: 'error', result: null, error: 'old' });
+
+    const stats = getTaskStats('gfolder-c', 7);
+    expect(stats.total_runs).toBe(1);
+    expect(stats.succeeded).toBe(1);
+    expect(stats.failed).toBe(0);
+  });
+
+  it('does not include runs from other group folders', () => {
+    makeTaskForStats('stats-task-3a', 'gfolder-d1');
+    makeTaskForStats('stats-task-3b', 'gfolder-d2');
+    const now = new Date().toISOString();
+    logTaskRun({ task_id: 'stats-task-3a', run_at: now, duration_ms: 100, status: 'success', result: 'ok', error: null });
+    logTaskRun({ task_id: 'stats-task-3b', run_at: now, duration_ms: 100, status: 'error', result: null, error: 'x' });
+
+    const statsD1 = getTaskStats('gfolder-d1', 7);
+    expect(statsD1.total_runs).toBe(1);
+    expect(statsD1.succeeded).toBe(1);
+
+    const statsD2 = getTaskStats('gfolder-d2', 7);
+    expect(statsD2.total_runs).toBe(1);
+    expect(statsD2.failed).toBe(1);
+  });
+
+  it('aggregates multiple tasks correctly', () => {
+    makeTaskForStats('stats-task-4a', 'gfolder-e');
+    makeTaskForStats('stats-task-4b', 'gfolder-e');
+    const now = new Date().toISOString();
+    logTaskRun({ task_id: 'stats-task-4a', run_at: now, duration_ms: 100, status: 'success', result: 'ok', error: null });
+    logTaskRun({ task_id: 'stats-task-4a', run_at: now, duration_ms: 100, status: 'success', result: 'ok', error: null });
+    logTaskRun({ task_id: 'stats-task-4b', run_at: now, duration_ms: 100, status: 'error', result: null, error: 'err' });
+
+    const stats = getTaskStats('gfolder-e', 7);
+    expect(stats.total_runs).toBe(3);
+    expect(stats.active_tasks).toBe(2);
+    expect(stats.by_task).toHaveLength(2);
+    // task-4a should be first (more runs)
+    expect(stats.by_task[0].task_id).toBe('stats-task-4a');
+    expect(stats.by_task[0].total_runs).toBe(2);
   });
 });

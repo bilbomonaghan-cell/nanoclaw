@@ -886,6 +886,85 @@ export function getChatStats(
   };
 }
 
+export interface TaskStatsSummary {
+  total_runs: number;
+  succeeded: number;
+  failed: number;
+  active_tasks: number;
+  days_covered: number;
+  by_task: Array<{
+    task_id: string;
+    name: string | null;
+    total_runs: number;
+    succeeded: number;
+    failed: number;
+    last_run: string | null;
+  }>;
+}
+
+/**
+ * Aggregate run statistics for a group's tasks over a given time window.
+ */
+export function getTaskStats(
+  groupFolder: string,
+  fromDays: number = 7,
+): TaskStatsSummary {
+  const sinceDate = new Date(Date.now() - fromDays * 86_400_000).toISOString();
+
+  const summary = db
+    .prepare(
+      `SELECT
+         COUNT(*) as total_runs,
+         COALESCE(SUM(CASE WHEN l.status = 'success' THEN 1 ELSE 0 END), 0) as succeeded,
+         COALESCE(SUM(CASE WHEN l.status = 'error' THEN 1 ELSE 0 END), 0) as failed,
+         COUNT(DISTINCT l.task_id) as active_tasks
+       FROM task_run_logs l
+       JOIN scheduled_tasks t ON l.task_id = t.id
+       WHERE t.group_folder = ?
+         AND l.run_at >= ?`,
+    )
+    .get(groupFolder, sinceDate) as {
+    total_runs: number;
+    succeeded: number;
+    failed: number;
+    active_tasks: number;
+  };
+
+  const byTask = db
+    .prepare(
+      `SELECT
+         t.id as task_id,
+         t.name,
+         COUNT(*) as total_runs,
+         SUM(CASE WHEN l.status = 'success' THEN 1 ELSE 0 END) as succeeded,
+         SUM(CASE WHEN l.status = 'error' THEN 1 ELSE 0 END) as failed,
+         MAX(l.run_at) as last_run
+       FROM task_run_logs l
+       JOIN scheduled_tasks t ON l.task_id = t.id
+       WHERE t.group_folder = ?
+         AND l.run_at >= ?
+       GROUP BY t.id, t.name
+       ORDER BY total_runs DESC`,
+    )
+    .all(groupFolder, sinceDate) as Array<{
+    task_id: string;
+    name: string | null;
+    total_runs: number;
+    succeeded: number;
+    failed: number;
+    last_run: string | null;
+  }>;
+
+  return {
+    total_runs: summary.total_runs,
+    succeeded: summary.succeeded,
+    failed: summary.failed,
+    active_tasks: summary.active_tasks,
+    days_covered: fromDays,
+    by_task: byTask,
+  };
+}
+
 // --- JSON migration ---
 
 function migrateJsonState(): void {
