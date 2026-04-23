@@ -8,6 +8,7 @@ import path from 'path';
 
 import {
   CONTAINER_IMAGE,
+  CONTAINER_INSTALL_LABEL,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
@@ -229,7 +230,7 @@ function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
 ): string[] {
-  const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+  const args: string[] = ['run', '-i', '--rm', '--name', containerName, '--label', CONTAINER_INSTALL_LABEL];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);

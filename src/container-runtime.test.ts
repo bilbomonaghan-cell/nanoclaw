@@ -23,6 +23,7 @@ import {
   ensureContainerRuntimeRunning,
   cleanupOrphans,
 } from './container-runtime.js';
+import { CONTAINER_INSTALL_LABEL } from './config.js';
 import { logger } from './logger.js';
 
 beforeEach(() => {
@@ -136,6 +137,15 @@ describe('cleanupOrphans', () => {
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
       'Failed to clean up orphaned containers',
+    );
+  });
+
+  it('filters ps by the install label so peers are not reaped', () => {
+    mockExecSync.mockReturnValueOnce('');
+    cleanupOrphans();
+    expect(mockExecSync).toHaveBeenCalledWith(
+      `${CONTAINER_RUNTIME_BIN} ps --filter label=${CONTAINER_INSTALL_LABEL} --format '{{.Names}}'`,
+      expect.any(Object),
     );
   });
 

@@ -68,6 +68,82 @@ server.tool(
 );
 
 server.tool(
+  'broadcast_message',
+  `Send a message to multiple registered groups at once. Main group only.
+Reads the registered groups snapshot and sends the message to all groups (or a specified subset).
+By default excludes the current group (since you can send there with send_message).
+Useful for system announcements, status updates, or notifying all groups simultaneously.`,
+  {
+    text: z.string().describe('Message text to broadcast'),
+    sender: z.string().optional().describe('Sender role/identity name (same as send_message)'),
+    group_jids: z.array(z.string()).optional().describe('Specific group JIDs to send to. If omitted, sends to ALL registered groups.'),
+    include_self: z.boolean().optional().default(false).describe('Whether to include the current group in the broadcast (default false — use send_message for that)'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'broadcast_message is only available in the main group.' }],
+        isError: true,
+      };
+    }
+
+    const snapshotPath = '/workspace/ipc/registered_groups.json';
+    if (!fs.existsSync(snapshotPath)) {
+      return {
+        content: [{ type: 'text' as const, text: 'No registered groups snapshot found. Try again after the next agent run.' }],
+        isError: true,
+      };
+    }
+
+    const raw = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8')) as {
+      groups: Array<{ jid: string; name: string; folder: string }>;
+    };
+
+    let targets = raw.groups;
+
+    // Filter to specified JIDs if provided
+    if (args.group_jids && args.group_jids.length > 0) {
+      const jidSet = new Set(args.group_jids);
+      targets = targets.filter((g) => jidSet.has(g.jid));
+    }
+
+    // Exclude self unless requested
+    if (!args.include_self) {
+      targets = targets.filter((g) => g.jid !== chatJid);
+    }
+
+    if (targets.length === 0) {
+      return {
+        content: [{ type: 'text' as const, text: 'No target groups to send to (after filtering).' }],
+      };
+    }
+
+    const sent: string[] = [];
+    for (const group of targets) {
+      const data: Record<string, string | undefined> = {
+        type: 'message',
+        chatJid: group.jid,
+        text: args.text,
+        sender: args.sender || undefined,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      };
+      writeIpcFile(MESSAGES_DIR, data);
+      sent.push(`• ${group.name} (${group.jid})`);
+    }
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Broadcast sent to ${sent.length} group(s):\n${sent.join('\n')}`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 
@@ -465,6 +541,104 @@ server.tool(
         {
           type: 'text' as const,
           text: `Task ${args.task_id} scheduled for immediate run (picks up on next scheduler poll, within ~60s).`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'task_clone',
+  `Clone an existing scheduled task, creating a new task with the same settings. You can optionally override individual fields in the clone.
+Reads the task from the current tasks snapshot, then creates a new task via IPC.
+Useful for: duplicating a task with a different schedule, creating a variant for a different use case, or testing a task change without modifying the original.`,
+  {
+    task_id: z.string().describe('ID of the task to clone'),
+    name: z.string().optional().describe('New name for the clone (defaults to original name with " (copy)" suffix)'),
+    prompt: z.string().optional().describe('Override the prompt for the clone'),
+    schedule_type: z.enum(['cron', 'interval', 'once']).optional().describe('Override the schedule type'),
+    schedule_value: z.string().optional().describe('Override the schedule value'),
+    context_mode: z.enum(['group', 'isolated']).optional().describe('Override the context mode'),
+    script: z.string().nullable().optional().describe('Override the pre-flight script (null to clear)'),
+  },
+  async (args) => {
+    // Load tasks snapshot
+    const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
+    if (!fs.existsSync(tasksFile)) {
+      return {
+        content: [{ type: 'text' as const, text: 'No tasks snapshot found. Try again after the next scheduled run.' }],
+        isError: true,
+      };
+    }
+
+    const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8')) as Array<{
+      id: string;
+      name?: string | null;
+      prompt: string;
+      schedule_type: string;
+      schedule_value: string;
+      context_mode: string;
+      script?: string | null;
+      notify_on_success?: boolean | null;
+      groupFolder: string;
+      chatJid: string;
+    }>;
+
+    const source = allTasks.find((t) => t.id === args.task_id || t.id.endsWith(args.task_id));
+    if (!source) {
+      return {
+        content: [{ type: 'text' as const, text: `Task "${args.task_id}" not found in current snapshot. Use list_tasks to find the full task ID.` }],
+        isError: true,
+      };
+    }
+
+    // Check ownership: non-main agents can only clone their own group's tasks
+    if (!isMain && source.groupFolder !== groupFolder) {
+      return {
+        content: [{ type: 'text' as const, text: 'You can only clone tasks that belong to your group.' }],
+        isError: true,
+      };
+    }
+
+    const cloneName = args.name ?? (source.name ? `${source.name} (copy)` : undefined);
+    const cloneScheduleType = args.schedule_type ?? source.schedule_type;
+    const cloneScheduleValue = args.schedule_value ?? source.schedule_value;
+
+    // Validate cron if applicable
+    if (cloneScheduleType === 'cron') {
+      try {
+        CronExpressionParser.parse(cloneScheduleValue);
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: `Invalid cron expression: "${cloneScheduleValue}".` }],
+          isError: true,
+        };
+      }
+    }
+
+    const cloneData = {
+      type: 'schedule_task',
+      chatJid: source.chatJid,
+      groupFolder: source.groupFolder,
+      prompt: args.prompt ?? source.prompt,
+      schedule_type: cloneScheduleType,
+      schedule_value: cloneScheduleValue,
+      context_mode: args.context_mode ?? source.context_mode,
+      script: args.script !== undefined ? args.script : source.script,
+      notify_on_success: source.notify_on_success ?? false,
+      name: cloneName ?? null,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, cloneData);
+
+    const schedDesc = `${cloneScheduleType}: ${cloneScheduleValue}`;
+    const nameStr = cloneName ? `"${cloneName}" ` : '';
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Task ${nameStr}cloned from [${source.id.slice(-12)}]. New task queued (schedule: ${schedDesc}). Use list_tasks in a moment to see the new task ID.`,
         },
       ],
     };

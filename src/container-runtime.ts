@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
+import { CONTAINER_INSTALL_LABEL } from './config.js';
 import { logger } from './logger.js';
 
 /** The container runtime binary name. */
@@ -103,19 +104,21 @@ export function ensureContainerRuntimeRunning(): void {
   }
 }
 
-/** Kill orphaned NanoClaw containers from previous runs. */
+/**
+ * Kill orphaned NanoClaw containers from previous runs.
+ * Filters by the per-install Docker label so two NanoClaw installs on the
+ * same host never reap each other's containers.
+ */
 export function cleanupOrphans(): void {
   try {
     const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=nanoclaw- --format '{{.Names}}'`,
+      `${CONTAINER_RUNTIME_BIN} ps --filter label=${CONTAINER_INSTALL_LABEL} --format '{{.Names}}'`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
-    // Filter out current hostname to prevent self-termination in Docker Sandbox
-    const hostname = os.hostname();
     const orphans = output
       .trim()
       .split('\n')
-      .filter((n) => Boolean(n) && !n.includes(hostname));
+      .filter(Boolean);
     for (const name of orphans) {
       try {
         stopContainer(name);
