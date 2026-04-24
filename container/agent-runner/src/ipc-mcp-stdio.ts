@@ -548,6 +548,179 @@ server.tool(
 );
 
 server.tool(
+  'remind_at',
+  `Schedule a one-time reminder message to be delivered to the current group at a specific local time. Creates a one-shot isolated task that sends the message via send_message.
+
+The \`when\` parameter must be a LOCAL datetime without a timezone suffix (no Z, no +00:00), e.g. "2026-04-25T09:00:00". Use get_current_time first to confirm the current local time before scheduling.
+
+Examples:
+- remind_at("Meeting in 30 minutes!", "2026-04-25T09:30:00", "Meeting nudge")
+- remind_at("Don't forget to review the pull request.", "2026-04-26T08:00:00")`,
+  {
+    message: z.string().describe('The reminder text to deliver to the group'),
+    when: z
+      .string()
+      .describe(
+        'Local datetime without timezone suffix (e.g. "2026-04-25T09:00:00"). Use get_current_time to find the current local time.',
+      ),
+    label: z
+      .string()
+      .optional()
+      .describe('Optional short label shown in list_tasks (default: "Reminder")'),
+  },
+  async (args) => {
+    // Reject timezone-qualified timestamps — schedule_task requires local time
+    if (/[Zz]$/.test(args.when) || /[+-]\d{2}:\d{2}$/.test(args.when)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Timestamp must be local time without timezone suffix. Got "${args.when}" — use format like "2026-04-25T09:00:00".`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const date = new Date(args.when);
+    if (isNaN(date.getTime())) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Invalid datetime: "${args.when}". Use local time format like "2026-04-25T09:00:00".`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    if (date <= new Date()) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Reminder time "${args.when}" is already in the past. Please specify a future time.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const label = args.label ?? 'Reminder';
+
+    // Build an isolated prompt that unconditionally delivers the message
+    const safeMessage = args.message.replace(/`/g, "'");
+    const prompt = `Send this reminder message to the group immediately using the send_message tool. Do not add commentary or modify the text — deliver it exactly as written:\n\n${safeMessage}`;
+
+    const data: Record<string, string> = {
+      type: 'schedule_task',
+      taskId,
+      prompt,
+      schedule_type: 'once',
+      schedule_value: args.when,
+      context_mode: 'isolated',
+      targetJid: chatJid,
+      createdBy: groupFolder,
+      timestamp: new Date().toISOString(),
+      taskName: label,
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    const preview = args.message.length > 80 ? args.message.slice(0, 80) + '…' : args.message;
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Reminder "${label}" scheduled for ${args.when}.\nTask ID: ${taskId}\nMessage: "${preview}"`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
+  'snooze_task',
+  `Defer a task's next run to a specific future time, without changing its recurring schedule. After the snooze period elapses, the task resumes its normal cron/interval cadence.
+
+The \`until\` parameter must be a LOCAL datetime without a timezone suffix (no Z, no +00:00), e.g. "2026-04-28T09:00:00". Use get_current_time first to confirm the current local time.
+
+Use cases:
+- "Skip the midnight report tonight, resume tomorrow" → snooze until tomorrow night
+- "Pause the PR-check task over the weekend" → snooze until Monday morning
+- "Don't ping me about X until after my vacation" → snooze until return date`,
+  {
+    task_id: z.string().describe('ID of the task to snooze'),
+    until: z
+      .string()
+      .describe(
+        'Local datetime to resume from (e.g. "2026-04-28T09:00:00"). The task will not run before this time. Use get_current_time to find the current local time.',
+      ),
+  },
+  async (args) => {
+    // Reject timezone-qualified timestamps
+    if (/[Zz]$/.test(args.until) || /[+-]\d{2}:\d{2}$/.test(args.until)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Timestamp must be local time without timezone suffix. Got "${args.until}" — use format like "2026-04-28T09:00:00".`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const date = new Date(args.until);
+    if (isNaN(date.getTime())) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Invalid datetime: "${args.until}". Use local time format like "2026-04-28T09:00:00".`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    if (date <= new Date()) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Snooze time "${args.until}" is already in the past. Please specify a future time.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'snooze_task',
+      taskId: args.task_id,
+      until: date.toISOString(), // send as UTC ISO for host
+      groupFolder,
+      isMain,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: `Task ${args.task_id} snoozed until ${args.until}. It will not run before that time.`,
+        },
+      ],
+    };
+  },
+);
+
+server.tool(
   'task_clone',
   `Clone an existing scheduled task, creating a new task with the same settings. You can optionally override individual fields in the clone.
 Reads the task from the current tasks snapshot, then creates a new task via IPC.
@@ -1115,6 +1288,73 @@ Useful for: understanding what groups are active, finding JIDs for scheduling cr
           text: `${groups.length} registered group(s) (snapshot from ${raw.updatedAt.slice(0, 16).replace('T', ' ')} UTC):\n\n${lines.join('\n\n')}`,
         },
       ],
+    };
+  },
+);
+
+server.tool(
+  'get_group_info',
+  `Get the current group's registration details: name, folder, JID, trigger word, and whether this is the main group. Read from the registered_groups snapshot written by the host.
+
+Useful for:
+- Confirming your own JID before cross-group operations
+- Checking trigger configuration
+- Understanding your group identity at a glance`,
+  {},
+  async () => {
+    // Always have env-var basics as a fallback
+    const basics = [`Folder: ${groupFolder}`, `JID: ${chatJid}`, `Is main: ${isMain}`];
+
+    const snapshotPath = '/workspace/ipc/registered_groups.json';
+    if (!fs.existsSync(snapshotPath)) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Current group (from environment):\n${basics.join('\n')}\n\n(No registered_groups snapshot found — richer info available after the next agent run.)`,
+          },
+        ],
+      };
+    }
+
+    const raw = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8')) as {
+      groups: Array<{
+        jid: string;
+        name: string;
+        folder: string;
+        trigger: string;
+        added_at: string;
+        requiresTrigger?: boolean;
+        isMain?: boolean;
+      }>;
+      updatedAt: string;
+    };
+
+    const entry = raw.groups.find((g) => g.folder === groupFolder);
+    if (!entry) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Current group (from environment):\n${basics.join('\n')}\n\n(Not found in registered_groups snapshot — snapshot may be stale.)`,
+          },
+        ],
+      };
+    }
+
+    const lines = [
+      `Name: ${entry.name}`,
+      `Folder: ${entry.folder}`,
+      `JID: ${entry.jid}`,
+      `Trigger: ${entry.trigger}`,
+      `Requires trigger: ${entry.requiresTrigger ?? true}`,
+      `Is main: ${entry.isMain ?? false}`,
+      `Added: ${entry.added_at.slice(0, 10)}`,
+      `Snapshot from: ${raw.updatedAt.slice(0, 16).replace('T', ' ')} UTC`,
+    ];
+
+    return {
+      content: [{ type: 'text' as const, text: `Current group info:\n\n${lines.join('\n')}` }],
     };
   },
 );

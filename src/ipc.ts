@@ -195,6 +195,8 @@ export async function processTaskIpc(
     taskName?: string;
     // For get_task_log
     runLogId?: number;
+    // For snooze_task
+    until?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -519,6 +521,47 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'snooze_task': {
+      const snoozeTaskId = data.taskId;
+      const snoozeUntil = data.until; // ISO timestamp
+      if (!snoozeTaskId || !snoozeUntil) {
+        logger.warn(
+          { sourceGroup },
+          'snooze_task missing taskId or until',
+        );
+        break;
+      }
+      const snoozeTask = getTaskById(snoozeTaskId);
+      if (!snoozeTask) {
+        logger.warn(
+          { taskId: snoozeTaskId, sourceGroup },
+          'Task not found for snooze_task',
+        );
+        break;
+      }
+      if (!isMain && snoozeTask.group_folder !== sourceGroup) {
+        logger.warn(
+          { taskId: snoozeTaskId, sourceGroup },
+          'Unauthorized snooze_task attempt blocked',
+        );
+        break;
+      }
+      const snoozeDate = new Date(snoozeUntil);
+      if (isNaN(snoozeDate.getTime()) || snoozeDate <= new Date()) {
+        logger.warn(
+          { taskId: snoozeTaskId, until: snoozeUntil, sourceGroup },
+          'snooze_task: until timestamp is invalid or in the past',
+        );
+        break;
+      }
+      updateTask(snoozeTaskId, { next_run: snoozeDate.toISOString() });
+      logger.info(
+        { taskId: snoozeTaskId, until: snoozeUntil, sourceGroup },
+        'Task snoozed via IPC',
+      );
+      break;
+    }
 
     case 'search_messages': {
       if (!data.queryId || !data.query) {
