@@ -115,10 +115,7 @@ export function cleanupOrphans(): void {
       `${CONTAINER_RUNTIME_BIN} ps --filter label=${CONTAINER_INSTALL_LABEL} --format '{{.Names}}'`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
-    const orphans = output
-      .trim()
-      .split('\n')
-      .filter(Boolean);
+    const orphans = output.trim().split('\n').filter(Boolean);
     for (const name of orphans) {
       try {
         stopContainer(name);

@@ -1088,9 +1088,30 @@ describe('getTaskStats', () => {
   it('counts success and error runs correctly', () => {
     makeTaskForStats('stats-task-1', 'gfolder-b');
     const now = new Date().toISOString();
-    logTaskRun({ task_id: 'stats-task-1', run_at: now, duration_ms: 500, status: 'success', result: 'ok', error: null });
-    logTaskRun({ task_id: 'stats-task-1', run_at: now, duration_ms: 600, status: 'error', result: null, error: 'boom' });
-    logTaskRun({ task_id: 'stats-task-1', run_at: now, duration_ms: 700, status: 'success', result: 'ok2', error: null });
+    logTaskRun({
+      task_id: 'stats-task-1',
+      run_at: now,
+      duration_ms: 500,
+      status: 'success',
+      result: 'ok',
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'stats-task-1',
+      run_at: now,
+      duration_ms: 600,
+      status: 'error',
+      result: null,
+      error: 'boom',
+    });
+    logTaskRun({
+      task_id: 'stats-task-1',
+      run_at: now,
+      duration_ms: 700,
+      status: 'success',
+      result: 'ok2',
+      error: null,
+    });
 
     const stats = getTaskStats('gfolder-b', 7);
     expect(stats.total_runs).toBe(3);
@@ -1108,8 +1129,22 @@ describe('getTaskStats', () => {
     makeTaskForStats('stats-task-2', 'gfolder-c');
     const recent = new Date().toISOString();
     const old = new Date(Date.now() - 20 * 86_400_000).toISOString();
-    logTaskRun({ task_id: 'stats-task-2', run_at: recent, duration_ms: 100, status: 'success', result: 'r', error: null });
-    logTaskRun({ task_id: 'stats-task-2', run_at: old, duration_ms: 200, status: 'error', result: null, error: 'old' });
+    logTaskRun({
+      task_id: 'stats-task-2',
+      run_at: recent,
+      duration_ms: 100,
+      status: 'success',
+      result: 'r',
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'stats-task-2',
+      run_at: old,
+      duration_ms: 200,
+      status: 'error',
+      result: null,
+      error: 'old',
+    });
 
     const stats = getTaskStats('gfolder-c', 7);
     expect(stats.total_runs).toBe(1);
@@ -1121,8 +1156,22 @@ describe('getTaskStats', () => {
     makeTaskForStats('stats-task-3a', 'gfolder-d1');
     makeTaskForStats('stats-task-3b', 'gfolder-d2');
     const now = new Date().toISOString();
-    logTaskRun({ task_id: 'stats-task-3a', run_at: now, duration_ms: 100, status: 'success', result: 'ok', error: null });
-    logTaskRun({ task_id: 'stats-task-3b', run_at: now, duration_ms: 100, status: 'error', result: null, error: 'x' });
+    logTaskRun({
+      task_id: 'stats-task-3a',
+      run_at: now,
+      duration_ms: 100,
+      status: 'success',
+      result: 'ok',
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'stats-task-3b',
+      run_at: now,
+      duration_ms: 100,
+      status: 'error',
+      result: null,
+      error: 'x',
+    });
 
     const statsD1 = getTaskStats('gfolder-d1', 7);
     expect(statsD1.total_runs).toBe(1);
@@ -1137,9 +1186,30 @@ describe('getTaskStats', () => {
     makeTaskForStats('stats-task-4a', 'gfolder-e');
     makeTaskForStats('stats-task-4b', 'gfolder-e');
     const now = new Date().toISOString();
-    logTaskRun({ task_id: 'stats-task-4a', run_at: now, duration_ms: 100, status: 'success', result: 'ok', error: null });
-    logTaskRun({ task_id: 'stats-task-4a', run_at: now, duration_ms: 100, status: 'success', result: 'ok', error: null });
-    logTaskRun({ task_id: 'stats-task-4b', run_at: now, duration_ms: 100, status: 'error', result: null, error: 'err' });
+    logTaskRun({
+      task_id: 'stats-task-4a',
+      run_at: now,
+      duration_ms: 100,
+      status: 'success',
+      result: 'ok',
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'stats-task-4a',
+      run_at: now,
+      duration_ms: 100,
+      status: 'success',
+      result: 'ok',
+      error: null,
+    });
+    logTaskRun({
+      task_id: 'stats-task-4b',
+      run_at: now,
+      duration_ms: 100,
+      status: 'error',
+      result: null,
+      error: 'err',
+    });
 
     const stats = getTaskStats('gfolder-e', 7);
     expect(stats.total_runs).toBe(3);

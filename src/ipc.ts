@@ -649,11 +649,7 @@ export async function processTaskIpc(
           : sourceGroup;
       const stats = getTaskStats(statsGroupFolder, fromDays);
       const tsIpcBaseDir = path.join(DATA_DIR, 'ipc');
-      const tsResponsesDir = path.join(
-        tsIpcBaseDir,
-        sourceGroup,
-        'responses',
-      );
+      const tsResponsesDir = path.join(tsIpcBaseDir, sourceGroup, 'responses');
       fs.mkdirSync(tsResponsesDir, { recursive: true });
       const tsResponseFile = path.join(tsResponsesDir, `${tsQueryId}.json`);
       fs.writeFileSync(tsResponseFile, JSON.stringify(stats), 'utf-8');
