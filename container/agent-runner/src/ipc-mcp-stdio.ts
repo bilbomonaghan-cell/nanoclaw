@@ -1919,19 +1919,20 @@ server.tool(
     const lines = existing.split('\n');
 
     // Determine heading depth from the provided heading (e.g. "## Notes" → depth 2)
-    const headingMatch = args.section_heading.match(/^(#{1,6})\s/);
+    const sectionHeading = args.section_heading ?? '';
+    const headingMatch = sectionHeading.match(/^(#{1,6})\s/);
     const headingDepth = headingMatch ? headingMatch[1].length : 1;
 
     // Find the line index of the target heading
     const headingLineIdx = lines.findIndex(
-      (l) => l.trim() === args.section_heading.trim(),
+      (l) => l.trim() === sectionHeading.trim(),
     );
 
     if (headingLineIdx === -1) {
       // Heading not found — append as a new section
       const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n\n' : '\n';
       const newContent =
-        existing + separator + args.section_heading + '\n\n' + args.text;
+        existing + separator + sectionHeading + '\n\n' + args.text;
       fs.writeFileSync(instructionsPath, newContent, 'utf-8');
       return {
         content: [
