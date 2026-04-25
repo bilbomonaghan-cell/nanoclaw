@@ -409,7 +409,8 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__ollama__*'
+        'mcp__ollama__*',
+        'mcp__scout__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -429,6 +430,12 @@ async function runQuery(
           command: 'node',
           args: [path.join(path.dirname(mcpServerPath), 'ollama-mcp-stdio.js')],
         },
+        ...(process.env.SCOUT_MCP_URL ? {
+          scout: {
+            type: 'http' as const,
+            url: process.env.SCOUT_MCP_URL,
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
