@@ -12,11 +12,13 @@ import {
   getRecentMessages,
   getRecentTaskRunLogs,
   getTaskById,
+  getTaskHistory,
   getTaskRunLogById,
   getTaskStats,
   logTaskRun,
   pruneTaskRunLogs,
   searchMessages,
+  setAllTasksStatus,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -1218,5 +1220,156 @@ describe('getTaskStats', () => {
     // task-4a should be first (more runs)
     expect(stats.by_task[0].task_id).toBe('stats-task-4a');
     expect(stats.by_task[0].total_runs).toBe(2);
+  });
+});
+
+// --- getTaskHistory ---
+
+describe('getTaskHistory', () => {
+  function makeTask(id: string, folder: string, name?: string) {
+    createTask({
+      id,
+      group_folder: folder,
+      chat_jid: `${folder}@g.us`,
+      prompt: 'test',
+      schedule_type: 'cron',
+      schedule_value: '0 * * * *',
+      next_run: new Date().toISOString(),
+      status: 'active',
+      created_at: new Date().toISOString(),
+      name: name ?? null,
+      script: null,
+      context_mode: 'group',
+      notify_on_success: null,
+    });
+  }
+
+  function makeLog(taskId: string, status: 'success' | 'error', daysAgo = 0) {
+    logTaskRun({
+      task_id: taskId,
+      run_at: new Date(Date.now() - daysAgo * 86_400_000).toISOString(),
+      duration_ms: 1000,
+      status,
+      result: status === 'success' ? 'ok' : null,
+      error: status === 'error' ? 'boom' : null,
+    });
+  }
+
+  it('returns empty array when no runs exist', () => {
+    expect(getTaskHistory('no-runs', 50, 7)).toHaveLength(0);
+  });
+
+  it('returns runs for the group in newest-first order', () => {
+    makeTask('th-task-a', 'th-group');
+    makeLog('th-task-a', 'success', 2);
+    makeLog('th-task-a', 'error', 0);
+
+    const history = getTaskHistory('th-group', 50, 7);
+    expect(history).toHaveLength(2);
+    // Most recent first
+    expect(history[0].status).toBe('error');
+    expect(history[1].status).toBe('success');
+  });
+
+  it('joins task name correctly', () => {
+    makeTask('th-task-named', 'th-named-group', 'My Task');
+    makeLog('th-task-named', 'success');
+
+    const [entry] = getTaskHistory('th-named-group', 50, 7);
+    expect(entry.task_name).toBe('My Task');
+    expect(entry.task_id).toBe('th-task-named');
+  });
+
+  it('isolates by group_folder', () => {
+    makeTask('th-x', 'th-gx');
+    makeTask('th-y', 'th-gy');
+    makeLog('th-x', 'success');
+    makeLog('th-y', 'success');
+
+    expect(getTaskHistory('th-gx', 50, 7)).toHaveLength(1);
+    expect(getTaskHistory('th-gy', 50, 7)).toHaveLength(1);
+  });
+
+  it('respects fromDays cutoff', () => {
+    makeTask('th-old', 'th-old-group');
+    makeLog('th-old', 'success', 10); // 10 days ago — outside 7-day window
+    makeLog('th-old', 'success', 1);  // 1 day ago — inside window
+
+    const history = getTaskHistory('th-old-group', 50, 7);
+    expect(history).toHaveLength(1);
+  });
+
+  it('respects limit', () => {
+    makeTask('th-lim', 'th-lim-group');
+    makeLog('th-lim', 'success');
+    makeLog('th-lim', 'success');
+    makeLog('th-lim', 'success');
+
+    expect(getTaskHistory('th-lim-group', 2, 7)).toHaveLength(2);
+  });
+});
+
+// --- setAllTasksStatus ---
+
+describe('setAllTasksStatus', () => {
+  function makeTask(id: string, folder: string, status: 'active' | 'paused') {
+    createTask({
+      id,
+      group_folder: folder,
+      chat_jid: `${folder}@g.us`,
+      prompt: 'test',
+      schedule_type: 'cron',
+      schedule_value: '0 * * * *',
+      next_run: new Date().toISOString(),
+      status,
+      created_at: new Date().toISOString(),
+      name: null,
+      script: null,
+      context_mode: 'group',
+      notify_on_success: null,
+    });
+  }
+
+  it('pauses all active tasks for a group', () => {
+    makeTask('sat-a1', 'sat-group', 'active');
+    makeTask('sat-a2', 'sat-group', 'active');
+    makeTask('sat-p1', 'sat-group', 'paused');
+
+    const changed = setAllTasksStatus('sat-group', 'paused', 'active');
+    expect(changed).toBe(2);
+    expect(getTaskById('sat-a1')!.status).toBe('paused');
+    expect(getTaskById('sat-a2')!.status).toBe('paused');
+    expect(getTaskById('sat-p1')!.status).toBe('paused'); // already paused
+  });
+
+  it('resumes all paused tasks for a group', () => {
+    makeTask('sat-b1', 'sat-b-group', 'paused');
+    makeTask('sat-b2', 'sat-b-group', 'paused');
+
+    const changed = setAllTasksStatus('sat-b-group', 'active', 'paused');
+    expect(changed).toBe(2);
+    expect(getTaskById('sat-b1')!.status).toBe('active');
+    expect(getTaskById('sat-b2')!.status).toBe('active');
+  });
+
+  it('returns 0 when no tasks match', () => {
+    expect(setAllTasksStatus('empty-group', 'paused', 'active')).toBe(0);
+  });
+
+  it('isolates by group_folder', () => {
+    makeTask('sat-c1', 'sat-c1-group', 'active');
+    makeTask('sat-c2', 'sat-c2-group', 'active');
+
+    setAllTasksStatus('sat-c1-group', 'paused', 'active');
+    expect(getTaskById('sat-c1')!.status).toBe('paused');
+    expect(getTaskById('sat-c2')!.status).toBe('active'); // untouched
+  });
+
+  it('changes all statuses when currentStatus is omitted', () => {
+    makeTask('sat-d1', 'sat-d-group', 'active');
+    makeTask('sat-d2', 'sat-d-group', 'paused');
+
+    const changed = setAllTasksStatus('sat-d-group', 'paused');
+    expect(changed).toBe(2);
   });
 });

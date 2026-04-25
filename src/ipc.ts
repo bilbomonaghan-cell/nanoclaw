@@ -11,9 +11,11 @@ import {
   getChatStats,
   getRecentMessages,
   getTaskById,
+  getTaskHistory,
   getTaskRunLogById,
   getTaskStats,
   searchMessages,
+  setAllTasksStatus,
   updateTask,
 } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -197,6 +199,9 @@ export async function processTaskIpc(
     runLogId?: number;
     // For snooze_task
     until?: string;
+    // For get_task_history
+    historyLimit?: number;
+    historyFromDays?: number;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -526,10 +531,7 @@ export async function processTaskIpc(
       const snoozeTaskId = data.taskId;
       const snoozeUntil = data.until; // ISO timestamp
       if (!snoozeTaskId || !snoozeUntil) {
-        logger.warn(
-          { sourceGroup },
-          'snooze_task missing taskId or until',
-        );
+        logger.warn({ sourceGroup }, 'snooze_task missing taskId or until');
         break;
       }
       const snoozeTask = getTaskById(snoozeTaskId);
@@ -754,6 +756,88 @@ export async function processTaskIpc(
         { sourceGroup, queryId: data.queryId, runLogId: data.runLogId },
         'get_task_log: wrote response',
       );
+      break;
+    }
+
+    case 'get_task_history': {
+      const thQueryId = data.queryId as string;
+      if (!thQueryId) break;
+      const historyLimit =
+        typeof data.historyLimit === 'number' ? data.historyLimit : 50;
+      const historyFromDays =
+        typeof data.historyFromDays === 'number' ? data.historyFromDays : 7;
+      // Main can query any group; others get their own
+      const historyGroupFolder =
+        isMain && typeof data.groupFolder === 'string'
+          ? data.groupFolder
+          : sourceGroup;
+      const history = getTaskHistory(
+        historyGroupFolder,
+        historyLimit,
+        historyFromDays,
+      );
+      const thIpcBase = path.join(DATA_DIR, 'ipc');
+      const thResponsesDir = path.join(thIpcBase, sourceGroup, 'responses');
+      fs.mkdirSync(thResponsesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(thResponsesDir, `${thQueryId}.json`),
+        JSON.stringify({ history }),
+        'utf-8',
+      );
+      logger.info(
+        { sourceGroup, queryId: thQueryId },
+        'get_task_history: wrote response',
+      );
+      break;
+    }
+
+    case 'pause_all_tasks': {
+      const paQueryId = data.queryId as string;
+      // Main can pause any group; others can only pause their own
+      const paGroupFolder =
+        isMain && typeof data.groupFolder === 'string'
+          ? data.groupFolder
+          : sourceGroup;
+      const pausedCount = setAllTasksStatus(paGroupFolder, 'paused', 'active');
+      logger.info(
+        { sourceGroup, targetGroup: paGroupFolder, pausedCount },
+        'pause_all_tasks: paused tasks',
+      );
+      if (paQueryId) {
+        const paIpcBase = path.join(DATA_DIR, 'ipc');
+        const paResponsesDir = path.join(paIpcBase, sourceGroup, 'responses');
+        fs.mkdirSync(paResponsesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(paResponsesDir, `${paQueryId}.json`),
+          JSON.stringify({ paused: pausedCount }),
+          'utf-8',
+        );
+      }
+      break;
+    }
+
+    case 'resume_all_tasks': {
+      const raQueryId = data.queryId as string;
+      // Main can resume any group; others can only resume their own
+      const raGroupFolder =
+        isMain && typeof data.groupFolder === 'string'
+          ? data.groupFolder
+          : sourceGroup;
+      const resumedCount = setAllTasksStatus(raGroupFolder, 'active', 'paused');
+      logger.info(
+        { sourceGroup, targetGroup: raGroupFolder, resumedCount },
+        'resume_all_tasks: resumed tasks',
+      );
+      if (raQueryId) {
+        const raIpcBase = path.join(DATA_DIR, 'ipc');
+        const raResponsesDir = path.join(raIpcBase, sourceGroup, 'responses');
+        fs.mkdirSync(raResponsesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(raResponsesDir, `${raQueryId}.json`),
+          JSON.stringify({ resumed: resumedCount }),
+          'utf-8',
+        );
+      }
       break;
     }
 

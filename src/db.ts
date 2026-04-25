@@ -965,6 +965,82 @@ export function getTaskStats(
   };
 }
 
+// --- Task history (cross-task run timeline) ---
+
+export interface TaskHistoryEntry {
+  log_id: number;
+  task_id: string;
+  task_name: string | null;
+  run_at: string;
+  duration_ms: number;
+  status: string;
+  error: string | null;
+}
+
+/**
+ * Return a chronological run log across all tasks for a group.
+ * Useful for a unified "what ran recently and did it succeed?" timeline.
+ */
+export function getTaskHistory(
+  groupFolder: string,
+  limit: number = 50,
+  fromDays: number = 7,
+): TaskHistoryEntry[] {
+  const sinceDate = new Date(Date.now() - fromDays * 86_400_000).toISOString();
+  return db
+    .prepare(
+      `SELECT
+         l.id        AS log_id,
+         l.task_id,
+         t.name      AS task_name,
+         l.run_at,
+         l.duration_ms,
+         l.status,
+         l.error
+       FROM task_run_logs l
+       JOIN scheduled_tasks t ON l.task_id = t.id
+       WHERE t.group_folder = ?
+         AND l.run_at >= ?
+       ORDER BY l.run_at DESC
+       LIMIT ?`,
+    )
+    .all(groupFolder, sinceDate, limit) as TaskHistoryEntry[];
+}
+
+// --- Bulk task status changes ---
+
+/**
+ * Set all tasks for a group to a given status.
+ * Optionally filter by current status (e.g. only pause active tasks).
+ * Returns the number of rows changed.
+ */
+export function setAllTasksStatus(
+  groupFolder: string,
+  newStatus: 'active' | 'paused',
+  currentStatus?: 'active' | 'paused',
+): number {
+  if (currentStatus !== undefined) {
+    return (
+      db
+        .prepare(
+          `UPDATE scheduled_tasks
+           SET status = ?
+           WHERE group_folder = ? AND status = ?`,
+        )
+        .run(newStatus, groupFolder, currentStatus).changes
+    );
+  }
+  return (
+    db
+      .prepare(
+        `UPDATE scheduled_tasks
+         SET status = ?
+         WHERE group_folder = ?`,
+      )
+      .run(newStatus, groupFolder).changes
+  );
+}
+
 // --- JSON migration ---
 
 function migrateJsonState(): void {

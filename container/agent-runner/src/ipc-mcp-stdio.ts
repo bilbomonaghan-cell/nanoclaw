@@ -2095,6 +2095,236 @@ server.tool(
   },
 );
 
+// ─── task_history ─────────────────────────────────────────────────────────────
+
+server.tool(
+  'task_history',
+  'Show a unified timeline of recent task runs across all scheduled tasks for this group. Each entry shows which task ran, when, how long it took, and whether it succeeded or failed. Useful for debugging failures or getting a quick health overview.',
+  {
+    limit: z
+      .number()
+      .optional()
+      .describe('Maximum number of entries to return (default: 50).'),
+    from_days: z
+      .number()
+      .optional()
+      .describe('How many days of history to include (default: 7).'),
+    group_folder: z
+      .string()
+      .optional()
+      .describe('(Main group only) folder of a different group to query.'),
+  },
+  async (args) => {
+    const queryId = `th-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `/workspace/ipc/responses/${queryId}.json`;
+
+    const queryFilePath = `${ipcTasksDir}/get_task_history_${queryId}.json`;
+    fs.writeFileSync(
+      queryFilePath,
+      JSON.stringify({
+        type: 'get_task_history',
+        queryId,
+        historyLimit: args.limit ?? 50,
+        historyFromDays: args.from_days ?? 7,
+        groupFolder: args.group_folder,
+      }),
+      'utf-8',
+    );
+
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          history: Array<{
+            log_id: number;
+            task_id: string;
+            task_name: string | null;
+            run_at: string;
+            duration_ms: number;
+            status: string;
+            error: string | null;
+          }>;
+        };
+
+        try { fs.unlinkSync(responseFile); } catch { /* best-effort */ }
+
+        const fromDays = args.from_days ?? 7;
+
+        if (raw.history.length === 0) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `No task runs in the last ${fromDays} day${fromDays === 1 ? '' : 's'}.`,
+              },
+            ],
+          };
+        }
+
+        const lines = raw.history.map((entry) => {
+          const icon = entry.status === 'success' ? '✅' : '❌';
+          const label = entry.task_name
+            ? `"${entry.task_name}"`
+            : entry.task_id.slice(-8);
+          const ts = entry.run_at.slice(0, 16).replace('T', ' ');
+          const dur = `${Math.round(entry.duration_ms / 1000)}s`;
+          const errSuffix =
+            entry.status !== 'success' && entry.error
+              ? ` — ${entry.error.slice(0, 80)}`
+              : '';
+          return `${icon} ${ts}  ${label}  (${dur})${errSuffix}`;
+        });
+
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `Task history — last ${fromDays} day${fromDays === 1 ? '' : 's'} (${raw.history.length} run${raw.history.length === 1 ? '' : 's'})\n\n${lines.join('\n')}`,
+            },
+          ],
+        };
+      }
+    }
+
+    try { fs.unlinkSync(queryFilePath); } catch { /* already processed */ }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'task_history timed out — the host did not respond. Try again shortly.',
+        },
+      ],
+      isError: true,
+    };
+  },
+);
+
+// ─── pause_all_tasks ──────────────────────────────────────────────────────────
+
+server.tool(
+  'pause_all_tasks',
+  'Pause all active scheduled tasks for this group at once. Returns the number of tasks paused. Use resume_all_tasks to re-enable them. Main group can target another group via group_folder.',
+  {
+    group_folder: z
+      .string()
+      .optional()
+      .describe('(Main group only) folder of a different group whose tasks to pause.'),
+  },
+  async (args) => {
+    const queryId = `pa-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `/workspace/ipc/responses/${queryId}.json`;
+
+    const queryFilePath = `${ipcTasksDir}/pause_all_tasks_${queryId}.json`;
+    fs.writeFileSync(
+      queryFilePath,
+      JSON.stringify({
+        type: 'pause_all_tasks',
+        queryId,
+        groupFolder: args.group_folder,
+      }),
+      'utf-8',
+    );
+
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          paused: number;
+        };
+        try { fs.unlinkSync(responseFile); } catch { /* best-effort */ }
+        const n = raw.paused;
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: n === 0
+                ? 'No active tasks to pause.'
+                : `Paused ${n} task${n === 1 ? '' : 's'}. Use resume_all_tasks to re-enable.`,
+            },
+          ],
+        };
+      }
+    }
+
+    try { fs.unlinkSync(queryFilePath); } catch { /* already processed */ }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'pause_all_tasks timed out — the host did not respond. Try again shortly.',
+        },
+      ],
+      isError: true,
+    };
+  },
+);
+
+// ─── resume_all_tasks ─────────────────────────────────────────────────────────
+
+server.tool(
+  'resume_all_tasks',
+  'Resume all paused scheduled tasks for this group at once. Returns the number of tasks re-enabled. Main group can target another group via group_folder.',
+  {
+    group_folder: z
+      .string()
+      .optional()
+      .describe('(Main group only) folder of a different group whose tasks to resume.'),
+  },
+  async (args) => {
+    const queryId = `ra-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `/workspace/ipc/responses/${queryId}.json`;
+
+    const queryFilePath = `${ipcTasksDir}/resume_all_tasks_${queryId}.json`;
+    fs.writeFileSync(
+      queryFilePath,
+      JSON.stringify({
+        type: 'resume_all_tasks',
+        queryId,
+        groupFolder: args.group_folder,
+      }),
+      'utf-8',
+    );
+
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          resumed: number;
+        };
+        try { fs.unlinkSync(responseFile); } catch { /* best-effort */ }
+        const n = raw.resumed;
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: n === 0
+                ? 'No paused tasks to resume.'
+                : `Resumed ${n} task${n === 1 ? '' : 's'}.`,
+            },
+          ],
+        };
+      }
+    }
+
+    try { fs.unlinkSync(queryFilePath); } catch { /* already processed */ }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'resume_all_tasks timed out — the host did not respond. Try again shortly.',
+        },
+      ],
+      isError: true,
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
