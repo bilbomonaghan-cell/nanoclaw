@@ -12,6 +12,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_NAME',
   'ASSISTANT_HAS_OWN_NUMBER',
   'TZ',
+  'SCOUT_MCP_URL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -105,3 +106,7 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+// Scout MCP server URL (optional) — forwarded to agent containers
+export const SCOUT_MCP_URL =
+  process.env.SCOUT_MCP_URL || envConfig.SCOUT_MCP_URL || '';

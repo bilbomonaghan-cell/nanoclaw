@@ -15,6 +15,7 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  SCOUT_MCP_URL,
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
@@ -254,6 +255,11 @@ function buildContainerArgs(
   ];
   for (const v of proxyVars) {
     if (process.env[v]) args.push('-e', `${v}=${process.env[v]}`);
+  }
+
+  // Forward Scout MCP server URL if configured
+  if (SCOUT_MCP_URL) {
+    args.push('-e', `SCOUT_MCP_URL=${SCOUT_MCP_URL}`);
   }
 
   // Mount proxy CA cert if present (Docker Sandbox MITM cert)
