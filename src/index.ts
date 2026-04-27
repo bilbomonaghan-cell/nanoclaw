@@ -3,7 +3,9 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  BASE_URL,
   CREDENTIAL_PROXY_PORT,
+  DASHBOARD_PORT,
   GROUPS_DIR,
   IDLE_TIMEOUT,
   MAX_MESSAGES_PER_PROMPT,
@@ -11,6 +13,7 @@ import {
   TIMEZONE,
   getTriggerPattern,
 } from './config.js';
+import { startDashboard } from './dashboard.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -570,6 +573,11 @@ async function main(): Promise<void> {
   loadState();
   restoreRemoteControl();
 
+  // Start Pip-Boy status dashboard
+  const dashServer = startDashboard(DASHBOARD_PORT);
+  const dashUrl = BASE_URL || `http://localhost:${DASHBOARD_PORT}`;
+  logger.info({ url: dashUrl }, 'Dashboard available');
+
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
     CREDENTIAL_PROXY_PORT,
@@ -579,6 +587,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    dashServer.close();
     proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();

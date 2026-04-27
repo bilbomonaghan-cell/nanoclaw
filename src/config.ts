@@ -110,3 +110,10 @@ export const TIMEZONE = resolveConfigTimezone();
 // Scout MCP server URL (optional) — forwarded to agent containers
 export const SCOUT_MCP_URL =
   process.env.SCOUT_MCP_URL || envConfig.SCOUT_MCP_URL || '';
+
+// Pip-Boy status dashboard
+export const DASHBOARD_PORT = parseInt(
+  process.env.DASHBOARD_PORT || '4000',
+  10,
+);
+export const BASE_URL = process.env.BASE_URL || '';
