@@ -1020,25 +1020,21 @@ export function setAllTasksStatus(
   currentStatus?: 'active' | 'paused',
 ): number {
   if (currentStatus !== undefined) {
-    return (
-      db
-        .prepare(
-          `UPDATE scheduled_tasks
-           SET status = ?
-           WHERE group_folder = ? AND status = ?`,
-        )
-        .run(newStatus, groupFolder, currentStatus).changes
-    );
-  }
-  return (
-    db
+    return db
       .prepare(
         `UPDATE scheduled_tasks
+           SET status = ?
+           WHERE group_folder = ? AND status = ?`,
+      )
+      .run(newStatus, groupFolder, currentStatus).changes;
+  }
+  return db
+    .prepare(
+      `UPDATE scheduled_tasks
          SET status = ?
          WHERE group_folder = ?`,
-      )
-      .run(newStatus, groupFolder).changes
-  );
+    )
+    .run(newStatus, groupFolder).changes;
 }
 
 // --- JSON migration ---

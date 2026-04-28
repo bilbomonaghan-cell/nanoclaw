@@ -1293,7 +1293,7 @@ describe('getTaskHistory', () => {
   it('respects fromDays cutoff', () => {
     makeTask('th-old', 'th-old-group');
     makeLog('th-old', 'success', 10); // 10 days ago — outside 7-day window
-    makeLog('th-old', 'success', 1);  // 1 day ago — inside window
+    makeLog('th-old', 'success', 1); // 1 day ago — inside window
 
     const history = getTaskHistory('th-old-group', 50, 7);
     expect(history).toHaveLength(1);
