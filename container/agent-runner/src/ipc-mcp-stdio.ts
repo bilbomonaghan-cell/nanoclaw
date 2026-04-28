@@ -1901,15 +1901,18 @@ server.tool(
       };
     }
 
+    // Narrowed: args.section_heading is defined from here on
+    const sectionHeading = args.section_heading;
+
     if (!fs.existsSync(instructionsPath)) {
       // File doesn't exist — create it with just the section
-      const newContent = `${args.section_heading}\n\n${args.text}`;
+      const newContent = `${sectionHeading}\n\n${args.text}`;
       fs.writeFileSync(instructionsPath, newContent, 'utf-8');
       return {
         content: [
           {
             type: 'text' as const,
-            text: `CLAUDE.md created with section "${args.section_heading}".`,
+            text: `CLAUDE.md created with section "${sectionHeading}".`,
           },
         ],
       };
@@ -1919,7 +1922,6 @@ server.tool(
     const lines = existing.split('\n');
 
     // Determine heading depth from the provided heading (e.g. "## Notes" → depth 2)
-    const sectionHeading = args.section_heading ?? '';
     const headingMatch = sectionHeading.match(/^(#{1,6})\s/);
     const headingDepth = headingMatch ? headingMatch[1].length : 1;
 
@@ -1938,7 +1940,7 @@ server.tool(
         content: [
           {
             type: 'text' as const,
-            text: `Section "${args.section_heading}" not found — appended as a new section.`,
+            text: `Section "${sectionHeading}" not found — appended as a new section.`,
           },
         ],
       };
@@ -1965,7 +1967,7 @@ server.tool(
       content: [
         {
           type: 'text' as const,
-          text: `Section "${args.section_heading}" updated in CLAUDE.md.`,
+          text: `Section "${sectionHeading}" updated in CLAUDE.md.`,
         },
       ],
     };
@@ -2323,6 +2325,252 @@ server.tool(
       ],
       isError: true,
     };
+  },
+);
+
+// ─── get_upcoming_tasks ───────────────────────────────────────────────────────
+
+server.tool(
+  'get_upcoming_tasks',
+  `Show a forward-looking timeline of scheduled tasks sorted by their next fire time.
+Useful for answering "what's running next?" or planning around scheduled work.
+
+Returns active tasks with a known next_run, sorted earliest-first.
+Paused tasks and tasks with no scheduled next run are excluded.
+Main group sees all tasks; other groups see only their own.`,
+  {
+    hours: z
+      .number()
+      .optional()
+      .describe(
+        'Only show tasks due within this many hours from now (default: show all upcoming tasks).',
+      ),
+    group_folder: z
+      .string()
+      .optional()
+      .describe('(Main group only) folder of a specific group to filter to.'),
+  },
+  async (args) => {
+    const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
+
+    try {
+      if (!fs.existsSync(tasksFile)) {
+        return { content: [{ type: 'text' as const, text: 'No scheduled tasks found.' }] };
+      }
+
+      const allTasks = JSON.parse(fs.readFileSync(tasksFile, 'utf-8')) as Array<{
+        id: string;
+        name?: string | null;
+        groupFolder: string;
+        prompt: string;
+        schedule_type: string;
+        schedule_value: string;
+        status: string;
+        next_run: string | null;
+        script?: string | null;
+      }>;
+
+      // Filter: active + has a next_run
+      let tasks = allTasks.filter(
+        (t) => t.status === 'active' && t.next_run != null,
+      );
+
+      // Group scoping
+      if (!isMain) {
+        tasks = tasks.filter((t) => t.groupFolder === groupFolder);
+      } else if (args.group_folder) {
+        tasks = tasks.filter((t) => t.groupFolder === args.group_folder);
+      }
+
+      // Optional hour window filter
+      const now = new Date();
+      if (args.hours != null) {
+        const cutoff = new Date(now.getTime() + args.hours * 60 * 60 * 1000);
+        tasks = tasks.filter((t) => new Date(t.next_run!) <= cutoff);
+      }
+
+      // Sort by next_run ascending
+      tasks.sort(
+        (a, b) => new Date(a.next_run!).getTime() - new Date(b.next_run!).getTime(),
+      );
+
+      if (tasks.length === 0) {
+        const windowNote = args.hours != null ? ` in the next ${args.hours}h` : '';
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `No upcoming active tasks${windowNote}.`,
+            },
+          ],
+        };
+      }
+
+      // Format timestamps relative to now for readability
+      const tz = process.env.TZ || 'UTC';
+      function formatNextRun(iso: string): string {
+        const d = new Date(iso);
+        const diffMs = d.getTime() - now.getTime();
+        const diffH = diffMs / (1000 * 60 * 60);
+
+        const localStr = d.toLocaleString('en-US', {
+          timeZone: tz,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+        });
+        // en-US gives MM/DD/YYYY, HH:MM — reformat to YYYY-MM-DD HH:MM
+        const match = localStr.match(/(\d{2})\/(\d{2})\/(\d{4}),\s*(\d{2}:\d{2})/);
+        const formatted = match
+          ? `${match[3]}-${match[1]}-${match[2]} ${match[4]}`
+          : iso.slice(0, 16).replace('T', ' ');
+
+        if (diffH < 0) return `overdue (was ${formatted})`;
+        if (diffH < 1) return `in ${Math.round(diffMs / 60000)}min (${formatted})`;
+        if (diffH < 24) return `today ${formatted.slice(11)}`;
+        if (diffH < 48) return `tomorrow ${formatted.slice(11)}`;
+        return formatted;
+      }
+
+      const lines = tasks.map((t) => {
+        const label = t.name ? `"${t.name}" [${t.id}]` : `[${t.id}]`;
+        const promptPreview =
+          t.prompt.length > 55 ? t.prompt.slice(0, 55) + '…' : t.prompt;
+        const scriptFlag = t.script ? ' [script]' : '';
+        const groupNote = isMain && !args.group_folder ? ` (${t.groupFolder})` : '';
+        const when = formatNextRun(t.next_run!);
+        return `⏰ ${when}\n   ${label}${groupNote}${scriptFlag} — ${promptPreview}`;
+      });
+
+      const windowNote =
+        args.hours != null ? ` (next ${args.hours}h)` : '';
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Upcoming tasks${windowNote} — ${tasks.length} active:\n\n${lines.join('\n\n')}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error reading tasks: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// ─── get_memory_stats ─────────────────────────────────────────────────────────
+
+server.tool(
+  'get_memory_stats',
+  `Show aggregate statistics about this group's memory store.
+Useful for understanding what's been remembered, how much space is used, and which tags are in use.
+
+Returns: entry count, unique tags with counts, oldest/newest entry timestamps, and total content size.`,
+  {},
+  async () => {
+    try {
+      if (!fs.existsSync(MEMORY_FILE)) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Memory store is empty — no entries yet. Use memory_store to save your first entry.',
+            },
+          ],
+        };
+      }
+
+      const raw = fs.readFileSync(MEMORY_FILE, 'utf-8');
+      const store = JSON.parse(raw) as Record<
+        string,
+        { content: string; tags: string[]; updated_at: string }
+      >;
+
+      const keys = Object.keys(store);
+      if (keys.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'Memory store is empty — no entries yet.',
+            },
+          ],
+        };
+      }
+
+      // Aggregate stats
+      let totalChars = 0;
+      let oldest: string | null = null;
+      let newest: string | null = null;
+      const tagCounts: Record<string, number> = {};
+
+      for (const key of keys) {
+        const entry = store[key];
+        totalChars += entry.content.length;
+        for (const tag of entry.tags ?? []) {
+          tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
+        }
+        const ts = entry.updated_at;
+        if (ts) {
+          if (!oldest || ts < oldest) oldest = ts;
+          if (!newest || ts > newest) newest = ts;
+        }
+      }
+
+      const sortedTags = Object.entries(tagCounts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([tag, count]) => `  • ${tag} (${count})`);
+
+      const lines: string[] = [
+        `**Memory store stats**`,
+        `Entries: ${keys.length}`,
+        `Total content: ${totalChars.toLocaleString()} chars`,
+        `Oldest entry: ${oldest ? oldest.slice(0, 16).replace('T', ' ') : 'unknown'}`,
+        `Newest entry: ${newest ? newest.slice(0, 16).replace('T', ' ') : 'unknown'}`,
+      ];
+
+      if (sortedTags.length > 0) {
+        lines.push(``, `**Tags (${Object.keys(tagCounts).length} unique):**`);
+        lines.push(...sortedTags);
+      } else {
+        lines.push(`Tags: none`);
+      }
+
+      lines.push(``, `**All keys:**`);
+      for (const key of keys.sort()) {
+        const entry = store[key];
+        const preview =
+          entry.content.length > 60
+            ? entry.content.slice(0, 60) + '…'
+            : entry.content;
+        const tagStr =
+          entry.tags && entry.tags.length > 0 ? ` [${entry.tags.join(', ')}]` : '';
+        lines.push(`  • ${key}${tagStr}: ${preview}`);
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: lines.join('\n') }],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error reading memory store: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+      };
+    }
   },
 );
 
