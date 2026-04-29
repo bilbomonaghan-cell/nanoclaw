@@ -13,6 +13,7 @@ import {
   TIMEZONE,
   getTriggerPattern,
 } from './config.js';
+import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import { startDashboard } from './dashboard.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
@@ -567,6 +568,9 @@ function ensureContainerSystemRunning(): void {
 }
 
 async function main(): Promise<void> {
+  // Circuit breaker: backoff on rapid restarts to avoid channel rate-limit bans.
+  await enforceStartupBackoff();
+
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
@@ -587,11 +591,17 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
-    dashServer.close();
-    proxyServer.close();
-    await queue.shutdown(10000);
-    for (const ch of channels) await ch.disconnect();
-    process.exit(0);
+    try {
+      dashServer.close();
+      proxyServer.close();
+      await queue.shutdown(10000);
+      for (const ch of channels) await ch.disconnect();
+    } finally {
+      // Always reset circuit breaker on graceful exit — even if teardown threw.
+      // Only crashes (where shutdown() never runs) should count against the breaker.
+      resetCircuitBreaker();
+      process.exit(0);
+    }
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
