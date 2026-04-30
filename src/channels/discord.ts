@@ -5,7 +5,9 @@ import {
   Message,
   TextChannel,
 } from 'discord.js';
+import fs from 'fs';
 import https from 'https';
+import path from 'path';
 import { setGlobalDispatcher, ProxyAgent } from 'undici';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 
@@ -23,6 +25,7 @@ if (proxyUrl) {
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
+import { resolveGroupIpcPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
@@ -31,6 +34,50 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+
+const MEDIA_MAX_BYTES = 20 * 1024 * 1024; // 20 MB cap
+
+/**
+ * Download a Discord CDN attachment to the group's IPC media directory.
+ * Returns the container-side path on success, null on any failure.
+ */
+async function downloadAttachment(
+  url: string,
+  filename: string,
+  groupFolder: string,
+): Promise<string | null> {
+  try {
+    const mediaDir = path.join(resolveGroupIpcPath(groupFolder), 'media');
+    fs.mkdirSync(mediaDir, { recursive: true });
+
+    // Prevent path traversal — keep only the basename, replace unsafe chars
+    const safeName = path
+      .basename(filename)
+      .replace(/[^a-zA-Z0-9._-]/g, '_')
+      .slice(0, 200);
+    const hostPath = path.join(mediaDir, safeName);
+    const containerPath = `/workspace/ipc/media/${safeName}`;
+
+    const resp = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    if (!resp.ok) {
+      logger.warn({ url, status: resp.status }, 'Discord attachment fetch failed');
+      return null;
+    }
+
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength > MEDIA_MAX_BYTES) {
+      logger.warn({ url, size: buf.byteLength }, 'Discord attachment too large, skipping download');
+      return null;
+    }
+
+    fs.writeFileSync(hostPath, Buffer.from(buf));
+    logger.info({ containerPath, bytes: buf.byteLength }, 'Discord attachment saved');
+    return containerPath;
+  } catch (err) {
+    logger.warn({ err, url }, 'Failed to download Discord attachment');
+    return null;
+  }
+}
 
 export interface DiscordChannelOpts {
   onMessage: OnInboundMessage;
@@ -107,21 +154,50 @@ export class DiscordChannel implements Channel {
         }
       }
 
-      // Handle attachments — store placeholders so the agent knows something was sent
+      // Store chat metadata for discovery
+      const isGroup = message.guild !== null;
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        chatName,
+        'discord',
+        isGroup,
+      );
+
+      // Resolve group early — needed for attachment downloads
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) {
+        logger.debug(
+          { chatJid, chatName },
+          'Message from unregistered Discord channel',
+        );
+        return;
+      }
+
+      // Handle attachments — download images to IPC media dir so the agent can Read them
       if (message.attachments.size > 0) {
-        const attachmentDescriptions = [...message.attachments.values()].map(
-          (att) => {
+        const attachmentDescriptions = await Promise.all(
+          [...message.attachments.values()].map(async (att) => {
             const contentType = att.contentType || '';
             if (contentType.startsWith('image/')) {
-              return `[Image: ${att.name || 'image'}]`;
+              const containerPath = await downloadAttachment(
+                att.url,
+                att.name || `attachment-${att.id}`,
+                group.folder,
+              );
+              if (containerPath) {
+                return `[Image: ${att.name || 'image'} — use Read tool to view: ${containerPath}]`;
+              }
+              // Fall back to URL so the agent can still fetch it
+              return `[Image: ${att.name || 'image'} — URL: ${att.url}]`;
             } else if (contentType.startsWith('video/')) {
-              return `[Video: ${att.name || 'video'}]`;
+              return `[Video: ${att.name || 'video'} — URL: ${att.url}]`;
             } else if (contentType.startsWith('audio/')) {
-              return `[Audio: ${att.name || 'audio'}]`;
+              return `[Audio: ${att.name || 'audio'} — URL: ${att.url}]`;
             } else {
-              return `[File: ${att.name || 'file'}]`;
+              return `[File: ${att.name || 'file'} — URL: ${att.url}]`;
             }
-          },
+          }),
         );
         if (content) {
           content = `${content}\n${attachmentDescriptions.join('\n')}`;
@@ -144,26 +220,6 @@ export class DiscordChannel implements Channel {
         } catch {
           // Referenced message may have been deleted
         }
-      }
-
-      // Store chat metadata for discovery
-      const isGroup = message.guild !== null;
-      this.opts.onChatMetadata(
-        chatJid,
-        timestamp,
-        chatName,
-        'discord',
-        isGroup,
-      );
-
-      // Only deliver full message for registered groups
-      const group = this.opts.registeredGroups()[chatJid];
-      if (!group) {
-        logger.debug(
-          { chatJid, chatName },
-          'Message from unregistered Discord channel',
-        );
-        return;
       }
 
       // Deliver message — startMessageLoop() will pick it up
