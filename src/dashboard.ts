@@ -85,7 +85,11 @@ function getDiskUsage(): DiskInfo {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
     const [used, available, percent] = output.split(' ');
-    return { used: used ?? '?', available: available ?? '?', percent: percent ?? '?' };
+    return {
+      used: used ?? '?',
+      available: available ?? '?',
+      percent: percent ?? '?',
+    };
   } catch {
     return { used: '?', available: '?', percent: '?' };
   }

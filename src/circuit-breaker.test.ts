@@ -21,7 +21,8 @@ const { TEST_DIR } = vi.hoisted(() => {
 const CB_PATH = path.join(TEST_DIR, 'circuit-breaker.json');
 
 vi.mock('./config.js', async () => {
-  const actual = await vi.importActual<typeof import('./config.js')>('./config.js');
+  const actual =
+    await vi.importActual<typeof import('./config.js')>('./config.js');
   return { ...actual, DATA_DIR: TEST_DIR };
 });
 
@@ -35,13 +36,19 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
+import {
+  enforceStartupBackoff,
+  resetCircuitBreaker,
+} from './circuit-breaker.js';
 
 function readState(): { attempt: number; timestamp: string } {
   return JSON.parse(fs.readFileSync(CB_PATH, 'utf-8'));
 }
 
-function seedState(attempt: number, timestamp = new Date().toISOString()): void {
+function seedState(
+  attempt: number,
+  timestamp = new Date().toISOString(),
+): void {
   fs.writeFileSync(CB_PATH, JSON.stringify({ attempt, timestamp }));
 }
 
@@ -147,12 +154,28 @@ describe('enforceStartupBackoff — backoff schedule', () => {
     priorAttempt: number | null;
     expectedDelaySec: number;
   }> = [
-    { label: 'clean first start (no file)', priorAttempt: null, expectedDelaySec: 0 },
+    {
+      label: 'clean first start (no file)',
+      priorAttempt: null,
+      expectedDelaySec: 0,
+    },
     { label: 'first crash (attempt=2)', priorAttempt: 1, expectedDelaySec: 0 },
-    { label: 'second crash (attempt=3)', priorAttempt: 2, expectedDelaySec: 10 },
+    {
+      label: 'second crash (attempt=3)',
+      priorAttempt: 2,
+      expectedDelaySec: 10,
+    },
     { label: 'third crash (attempt=4)', priorAttempt: 3, expectedDelaySec: 30 },
-    { label: 'fourth crash (attempt=5)', priorAttempt: 4, expectedDelaySec: 120 },
-    { label: 'fifth crash (attempt=6)', priorAttempt: 5, expectedDelaySec: 300 },
+    {
+      label: 'fourth crash (attempt=5)',
+      priorAttempt: 4,
+      expectedDelaySec: 120,
+    },
+    {
+      label: 'fifth crash (attempt=6)',
+      priorAttempt: 5,
+      expectedDelaySec: 300,
+    },
     {
       label: 'sixth crash (attempt=7) — cap',
       priorAttempt: 6,
@@ -179,7 +202,9 @@ describe('enforceStartupBackoff — backoff schedule', () => {
       // enforceStartupBackoff only calls setTimeout when delaySec > 0.
       // Pick the longest delay it requested (vitest may queue internal timers).
       const requestedDelays = setTimeoutSpy.mock.calls.map((c) => c[1] ?? 0);
-      const maxDelayMs = requestedDelays.length ? Math.max(...requestedDelays) : 0;
+      const maxDelayMs = requestedDelays.length
+        ? Math.max(...requestedDelays)
+        : 0;
 
       expect(maxDelayMs).toBe(expectedDelaySec * 1000);
     });

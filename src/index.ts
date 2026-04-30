@@ -13,7 +13,10 @@ import {
   TIMEZONE,
   getTriggerPattern,
 } from './config.js';
-import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
+import {
+  enforceStartupBackoff,
+  resetCircuitBreaker,
+} from './circuit-breaker.js';
 import { startDashboard } from './dashboard.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
