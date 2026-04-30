@@ -424,6 +424,7 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            NANOCLAW_CONTAINER_IMAGE: process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest',
           },
         },
         ollama: {
@@ -498,7 +499,9 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = {
     ...process.env,
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
+    // Read from env (forwarded by host container-runner) so operators can tune without
+    // rebuilding the container. Falls back to 200k which suits sonnet[1m] / 1M context.
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '200000',
   };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));

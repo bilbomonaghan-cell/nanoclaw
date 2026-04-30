@@ -1702,6 +1702,77 @@ The timezone is configured on the host (TZ env var). Defaults to UTC if not set.
   },
 );
 
+// ─── get_config ──────────────────────────────────────────────────────────────
+
+server.tool(
+  'get_config',
+  `Show the current runtime configuration for this agent container. Useful for debugging and understanding the environment.
+
+Returns: timezone, model, context compaction window, group identity, agent SDK version, and any optional integrations (Scout, Ollama).`,
+  {},
+  async () => {
+    const tz = process.env.TZ || 'UTC';
+    const compactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '200000';
+    const scoutUrl = process.env.SCOUT_MCP_URL || '';
+    const groupFolder = process.env.NANOCLAW_GROUP_FOLDER || '(unknown)';
+    const chatJid = process.env.NANOCLAW_CHAT_JID || '(unknown)';
+    const isMain = process.env.NANOCLAW_IS_MAIN === '1';
+    const containerImage = process.env.NANOCLAW_CONTAINER_IMAGE || '(unknown)';
+
+    // Read agent SDK version from package.json inside the container
+    let sdkVersion = '(unknown)';
+    try {
+      const pkgPath = new URL('../../../package.json', import.meta.url);
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8')) as {
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+      sdkVersion =
+        pkg.dependencies?.['@anthropic-ai/claude-agent-sdk'] ||
+        pkg.devDependencies?.['@anthropic-ai/claude-agent-sdk'] ||
+        '(not found)';
+    } catch {
+      /* ignore */
+    }
+
+    const lines: string[] = [
+      '⚙️  Runtime Configuration',
+      '',
+      `Timezone:              ${tz}`,
+      `Model:                 sonnet[1m]`,
+      `Compact window:        ${compactWindow} tokens`,
+      `Claude Agent SDK:      ${sdkVersion}`,
+      '',
+      `Group folder:          ${groupFolder}`,
+      `Chat JID:              ${chatJid}`,
+      `Main agent:            ${isMain ? 'yes' : 'no'}`,
+      `Container image:       ${containerImage}`,
+    ];
+
+    if (scoutUrl) {
+      lines.push(`Scout MCP URL:         ${scoutUrl}`);
+    }
+
+    // Check Ollama reachability (non-blocking)
+    try {
+      const res = await fetch('http://host.docker.internal:11434/api/tags', { signal: AbortSignal.timeout(1000) });
+      if (res.ok) {
+        const data = (await res.json()) as { models?: { name: string }[] };
+        const count = data.models?.length ?? 0;
+        lines.push(`Ollama:                ✅ running (${count} model${count === 1 ? '' : 's'})`);
+      } else {
+        lines.push(`Ollama:                ⚠️ reachable but returned ${res.status}`);
+      }
+    } catch {
+      lines.push(`Ollama:                ❌ not reachable (not running or not installed)`);
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: lines.join('\n') }],
+    };
+  },
+);
+
 // ─── Ollama Tools ─────────────────────────────────────────────────────────────
 
 const OLLAMA_BASE = 'http://host.docker.internal:11434';
@@ -1970,6 +2041,92 @@ server.tool(
           text: `Section "${sectionHeading}" updated in CLAUDE.md.`,
         },
       ],
+    };
+  },
+);
+
+// ─── set_group_instructions ──────────────────────────────────────────────────
+
+server.tool(
+  'set_group_instructions',
+  `(Main agent only) Update another group's CLAUDE.md instructions file via the host. Useful for bootstrapping new groups, propagating instruction changes across groups, or correcting a group's behaviour remotely.
+
+Three modes:
+- \`replace\` (default): overwrite the entire CLAUDE.md
+- \`append\`: add text to the end of the file
+- \`replace_section\`: surgically update one markdown section by heading, leaving the rest intact
+
+Non-main agents calling this tool will receive an authorization error.`,
+  {
+    target_folder: z
+      .string()
+      .describe("The group's folder name (e.g. \"whatsapp_family-chat\"). Must be a registered group folder."),
+    mode: z
+      .enum(['append', 'replace', 'replace_section'])
+      .optional()
+      .describe('How to update the file. Defaults to `replace`.'),
+    text: z
+      .string()
+      .describe('The text to write — full content for replace, appended text for append, section body for replace_section.'),
+    section_heading: z
+      .string()
+      .optional()
+      .describe('Required for replace_section mode. The exact heading line (e.g. "## Notes"). Heading is preserved; only the content beneath it is replaced.'),
+  },
+  async (args) => {
+    const queryId = `sgi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `/workspace/ipc/responses/${queryId}.json`;
+
+    const queryFilePath = `${ipcTasksDir}/set_group_instructions_${queryId}.json`;
+    fs.writeFileSync(
+      queryFilePath,
+      JSON.stringify({
+        type: 'set_group_instructions',
+        queryId,
+        targetFolder: args.target_folder,
+        mode: args.mode || 'replace',
+        text: args.text,
+        sectionHeading: args.section_heading,
+      }),
+      'utf-8',
+    );
+
+    // Poll for response (8s)
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const resp = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          ok?: boolean;
+          chars?: number;
+          error?: string;
+        };
+        try {
+          fs.unlinkSync(responseFile);
+        } catch {
+          /* ignore */
+        }
+        if (resp.error) {
+          return {
+            content: [{ type: 'text' as const, text: `Error: ${resp.error}` }],
+            isError: true,
+          };
+        }
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: `CLAUDE.md for group "${args.target_folder}" updated (mode: ${args.mode || 'replace'}, ${resp.chars ?? 0} chars).`,
+            },
+          ],
+        };
+      }
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: 'Timed out waiting for host response. Try again in a moment.' }],
+      isError: true,
     };
   },
 );

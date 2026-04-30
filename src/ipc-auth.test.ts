@@ -1,4 +1,8 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 import {
   _initTestDatabase,
@@ -763,5 +767,144 @@ describe('register_group success', () => {
     );
 
     expect(getRegisteredGroup('partial@g.us')).toBeUndefined();
+  });
+});
+
+// --- set_group_instructions authorization and behaviour ---
+
+describe('set_group_instructions', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nanoclaw-sgi-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it('non-main group cannot update instructions', async () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    await processTaskIpc(
+      {
+        type: 'set_group_instructions',
+        targetFolder: 'whatsapp_family-chat',
+        text: 'hijacked instructions',
+        mode: 'replace',
+      },
+      'whatsapp_family-chat',
+      false,
+      deps,
+    );
+    // writeFileSync should never be called with CLAUDE.md content
+    const claudeMdCalls = writeFileSpy.mock.calls.filter(
+      ([p]) => typeof p === 'string' && String(p).includes('CLAUDE.md'),
+    );
+    expect(claudeMdCalls).toHaveLength(0);
+  });
+
+  it('main group can replace a group CLAUDE.md', async () => {
+    const targetFolder = 'whatsapp_family-chat';
+    const targetGroupDir = path.join(tmpDir, targetFolder);
+    fs.mkdirSync(targetGroupDir, { recursive: true });
+
+    // Spy on writeFileSync to capture writes, routing to tmpDir
+    const writeFileSpy = vi
+      .spyOn(fs, 'writeFileSync')
+      .mockImplementation((filePath, data, encoding) => {
+        // Redirect CLAUDE.md writes to tmpDir
+        if (typeof filePath === 'string' && filePath.includes('CLAUDE.md')) {
+          const orig = fs.writeFileSync;
+          // Write to tmpDir version instead
+          const redirected = path.join(
+            tmpDir,
+            path.basename(path.dirname(filePath as string)),
+            'CLAUDE.md',
+          );
+          fs.mkdirSync(path.dirname(redirected), { recursive: true });
+          // Use real writeFileSync via original — call synchronously
+          orig.call(fs, redirected, data, encoding ?? 'utf-8');
+        }
+        // response files go through as-is (IPC responses dir)
+      });
+
+    await processTaskIpc(
+      {
+        type: 'set_group_instructions',
+        queryId: 'test-qid-1',
+        targetFolder,
+        text: '# Test Instructions\n\nHello world.',
+        mode: 'replace',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+
+    // Should have attempted a CLAUDE.md write
+    const claudeMdCalls = writeFileSpy.mock.calls.filter(
+      ([p]) => typeof p === 'string' && String(p).includes('CLAUDE.md'),
+    );
+    expect(claudeMdCalls.length).toBeGreaterThanOrEqual(1);
+    writeFileSpy.mockRestore();
+  });
+
+  it('rejects missing required fields', async () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    await processTaskIpc(
+      {
+        type: 'set_group_instructions',
+        // missing targetFolder and text
+        mode: 'replace',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+    // Should write an error response but not a CLAUDE.md
+    const claudeMdCalls = writeFileSpy.mock.calls.filter(
+      ([p]) => typeof p === 'string' && String(p).includes('CLAUDE.md'),
+    );
+    expect(claudeMdCalls).toHaveLength(0);
+  });
+
+  it('rejects invalid folder name', async () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    await processTaskIpc(
+      {
+        type: 'set_group_instructions',
+        targetFolder: '../../../etc/passwd',
+        text: 'hacked',
+        mode: 'replace',
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+    const claudeMdCalls = writeFileSpy.mock.calls.filter(
+      ([p]) => typeof p === 'string' && String(p).includes('CLAUDE.md'),
+    );
+    expect(claudeMdCalls).toHaveLength(0);
+  });
+
+  it('replace_section mode requires sectionHeading', async () => {
+    const writeFileSpy = vi.spyOn(fs, 'writeFileSync');
+    await processTaskIpc(
+      {
+        type: 'set_group_instructions',
+        targetFolder: 'whatsapp_family-chat',
+        text: 'replacement body',
+        mode: 'replace_section',
+        // missing sectionHeading
+      },
+      'whatsapp_main',
+      true,
+      deps,
+    );
+    const claudeMdCalls = writeFileSpy.mock.calls.filter(
+      ([p]) => typeof p === 'string' && String(p).includes('CLAUDE.md'),
+    );
+    expect(claudeMdCalls).toHaveLength(0);
   });
 });

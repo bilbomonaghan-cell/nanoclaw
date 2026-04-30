@@ -13,6 +13,7 @@ const envConfig = readEnvFile([
   'ASSISTANT_HAS_OWN_NUMBER',
   'TZ',
   'SCOUT_MCP_URL',
+  'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
 ]);
 
 export const ASSISTANT_NAME =
@@ -110,6 +111,14 @@ export const TIMEZONE = resolveConfigTimezone();
 // Scout MCP server URL (optional) — forwarded to agent containers
 export const SCOUT_MCP_URL =
   process.env.SCOUT_MCP_URL || envConfig.SCOUT_MCP_URL || '';
+
+// Claude Code context compaction threshold (tokens). Forwarded to agent containers.
+// Set CLAUDE_CODE_AUTO_COMPACT_WINDOW in .env (or host env) to tune without editing source.
+// We run sonnet[1m] (1M context), so 200k is a sensible default.
+export const CLAUDE_CODE_AUTO_COMPACT_WINDOW =
+  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ||
+  envConfig.CLAUDE_CODE_AUTO_COMPACT_WINDOW ||
+  '200000';
 
 // Pip-Boy status dashboard
 export const DASHBOARD_PORT = parseInt(

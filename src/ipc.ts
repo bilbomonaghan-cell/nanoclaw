@@ -3,7 +3,7 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
-import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { DATA_DIR, GROUPS_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import {
   createTask,
@@ -837,6 +837,137 @@ export async function processTaskIpc(
           JSON.stringify({ resumed: resumedCount }),
           'utf-8',
         );
+      }
+      break;
+    }
+
+    case 'set_group_instructions': {
+      // Main-only: update any group's CLAUDE.md from the host side
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized set_group_instructions attempt blocked',
+        );
+        break;
+      }
+      const sgiQueryId = data.queryId as string;
+      const sgiIpcBase = path.join(DATA_DIR, 'ipc');
+      const sgiResponsesDir = path.join(sgiIpcBase, sourceGroup, 'responses');
+      fs.mkdirSync(sgiResponsesDir, { recursive: true });
+
+      const targetFolder = data.targetFolder as string | undefined;
+      const instructionsText = data.text as string | undefined;
+      const mode = (data.mode as string | undefined) || 'replace';
+
+      if (!targetFolder || !instructionsText) {
+        logger.warn(
+          { data },
+          'set_group_instructions: missing required fields (targetFolder, text)',
+        );
+        if (sgiQueryId) {
+          fs.writeFileSync(
+            path.join(sgiResponsesDir, `${sgiQueryId}.json`),
+            JSON.stringify({ error: 'Missing required fields: targetFolder, text' }),
+            'utf-8',
+          );
+        }
+        break;
+      }
+
+      if (!isValidGroupFolder(targetFolder)) {
+        if (sgiQueryId) {
+          fs.writeFileSync(
+            path.join(sgiResponsesDir, `${sgiQueryId}.json`),
+            JSON.stringify({ error: `Invalid group folder name: ${targetFolder}` }),
+            'utf-8',
+          );
+        }
+        break;
+      }
+
+      const claudeMdPath = path.join(GROUPS_DIR, targetFolder, 'CLAUDE.md');
+      const groupDir = path.join(GROUPS_DIR, targetFolder);
+
+      try {
+        // Ensure group directory exists
+        if (!fs.existsSync(groupDir)) {
+          fs.mkdirSync(groupDir, { recursive: true });
+        }
+
+        let newContent: string;
+        if (mode === 'append') {
+          const existing = fs.existsSync(claudeMdPath)
+            ? fs.readFileSync(claudeMdPath, 'utf-8')
+            : '';
+          newContent = existing ? `${existing}\n${instructionsText}` : instructionsText;
+        } else if (mode === 'replace_section') {
+          const sectionHeading = data.sectionHeading as string | undefined;
+          if (!sectionHeading) {
+            if (sgiQueryId) {
+              fs.writeFileSync(
+                path.join(sgiResponsesDir, `${sgiQueryId}.json`),
+                JSON.stringify({ error: 'replace_section mode requires sectionHeading field' }),
+                'utf-8',
+              );
+            }
+            break;
+          }
+          const existing = fs.existsSync(claudeMdPath)
+            ? fs.readFileSync(claudeMdPath, 'utf-8')
+            : '';
+          const lines = existing.split('\n');
+          const headingLine = sectionHeading.trim();
+          const headingIdx = lines.findIndex((l) => l.trim() === headingLine);
+          if (headingIdx === -1) {
+            // Append as new section
+            newContent = existing
+              ? `${existing}\n\n${headingLine}\n\n${instructionsText}`
+              : `${headingLine}\n\n${instructionsText}`;
+          } else {
+            // Find next same-or-higher-level heading
+            const level = (headingLine.match(/^#+/) ?? [''])[0].length;
+            let endIdx = lines.length;
+            for (let i = headingIdx + 1; i < lines.length; i++) {
+              const m = lines[i].match(/^(#+)\s/);
+              if (m && m[1].length <= level) {
+                endIdx = i;
+                break;
+              }
+            }
+            const before = lines.slice(0, headingIdx + 1);
+            const after = lines.slice(endIdx);
+            newContent = [...before, '', instructionsText, ...(after.length ? ['', ...after] : [])].join('\n');
+          }
+        } else {
+          // replace (default)
+          newContent = instructionsText;
+        }
+
+        fs.writeFileSync(claudeMdPath, newContent, 'utf-8');
+        logger.info(
+          { sourceGroup, targetFolder, mode, chars: newContent.length },
+          'set_group_instructions: CLAUDE.md updated',
+        );
+        if (sgiQueryId) {
+          fs.writeFileSync(
+            path.join(sgiResponsesDir, `${sgiQueryId}.json`),
+            JSON.stringify({ ok: true, chars: newContent.length }),
+            'utf-8',
+          );
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error(
+          { sourceGroup, targetFolder, err },
+          'set_group_instructions: failed to write CLAUDE.md',
+        );
+        if (sgiQueryId) {
+          fs.writeFileSync(
+            path.join(sgiResponsesDir, `${sgiQueryId}.json`),
+            JSON.stringify({ error: errMsg }),
+            'utf-8',
+          );
+        }
       }
       break;
     }
