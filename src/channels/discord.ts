@@ -60,18 +60,27 @@ async function downloadAttachment(
 
     const resp = await fetch(url, { signal: AbortSignal.timeout(20_000) });
     if (!resp.ok) {
-      logger.warn({ url, status: resp.status }, 'Discord attachment fetch failed');
+      logger.warn(
+        { url, status: resp.status },
+        'Discord attachment fetch failed',
+      );
       return null;
     }
 
     const buf = await resp.arrayBuffer();
     if (buf.byteLength > MEDIA_MAX_BYTES) {
-      logger.warn({ url, size: buf.byteLength }, 'Discord attachment too large, skipping download');
+      logger.warn(
+        { url, size: buf.byteLength },
+        'Discord attachment too large, skipping download',
+      );
       return null;
     }
 
     fs.writeFileSync(hostPath, Buffer.from(buf));
-    logger.info({ containerPath, bytes: buf.byteLength }, 'Discord attachment saved');
+    logger.info(
+      { containerPath, bytes: buf.byteLength },
+      'Discord attachment saved',
+    );
     return containerPath;
   } catch (err) {
     logger.warn({ err, url }, 'Failed to download Discord attachment');

@@ -867,7 +867,9 @@ export async function processTaskIpc(
         if (sgiQueryId) {
           fs.writeFileSync(
             path.join(sgiResponsesDir, `${sgiQueryId}.json`),
-            JSON.stringify({ error: 'Missing required fields: targetFolder, text' }),
+            JSON.stringify({
+              error: 'Missing required fields: targetFolder, text',
+            }),
             'utf-8',
           );
         }
@@ -878,7 +880,9 @@ export async function processTaskIpc(
         if (sgiQueryId) {
           fs.writeFileSync(
             path.join(sgiResponsesDir, `${sgiQueryId}.json`),
-            JSON.stringify({ error: `Invalid group folder name: ${targetFolder}` }),
+            JSON.stringify({
+              error: `Invalid group folder name: ${targetFolder}`,
+            }),
             'utf-8',
           );
         }
@@ -899,14 +903,18 @@ export async function processTaskIpc(
           const existing = fs.existsSync(claudeMdPath)
             ? fs.readFileSync(claudeMdPath, 'utf-8')
             : '';
-          newContent = existing ? `${existing}\n${instructionsText}` : instructionsText;
+          newContent = existing
+            ? `${existing}\n${instructionsText}`
+            : instructionsText;
         } else if (mode === 'replace_section') {
           const sectionHeading = data.sectionHeading as string | undefined;
           if (!sectionHeading) {
             if (sgiQueryId) {
               fs.writeFileSync(
                 path.join(sgiResponsesDir, `${sgiQueryId}.json`),
-                JSON.stringify({ error: 'replace_section mode requires sectionHeading field' }),
+                JSON.stringify({
+                  error: 'replace_section mode requires sectionHeading field',
+                }),
                 'utf-8',
               );
             }
@@ -936,7 +944,12 @@ export async function processTaskIpc(
             }
             const before = lines.slice(0, headingIdx + 1);
             const after = lines.slice(endIdx);
-            newContent = [...before, '', instructionsText, ...(after.length ? ['', ...after] : [])].join('\n');
+            newContent = [
+              ...before,
+              '',
+              instructionsText,
+              ...(after.length ? ['', ...after] : []),
+            ].join('\n');
           }
         } else {
           // replace (default)

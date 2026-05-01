@@ -264,7 +264,10 @@ function buildContainerArgs(
   }
 
   // Forward context compaction threshold so host can tune it without rebuilding the container
-  args.push('-e', `CLAUDE_CODE_AUTO_COMPACT_WINDOW=${CLAUDE_CODE_AUTO_COMPACT_WINDOW}`);
+  args.push(
+    '-e',
+    `CLAUDE_CODE_AUTO_COMPACT_WINDOW=${CLAUDE_CODE_AUTO_COMPACT_WINDOW}`,
+  );
 
   // Mount proxy CA cert if present (Docker Sandbox MITM cert)
   const caCertSrc =
