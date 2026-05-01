@@ -73,6 +73,10 @@ export interface ScheduledTask {
   status: 'active' | 'paused' | 'completed';
   created_at: string;
   notify_on_success?: boolean | null;
+  /** Maximum number of successful runs before the task is auto-cancelled. null = unlimited. */
+  max_runs?: number | null;
+  /** Number of successful runs so far. */
+  run_count?: number;
 }
 
 export interface TaskRunLog {

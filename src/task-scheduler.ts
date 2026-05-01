@@ -9,10 +9,12 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  deleteTask,
   getAllTasks,
   getDueTasks,
   getRecentTaskRunLogs,
   getTaskById,
+  incrementTaskRunCount,
   logTaskRun,
   updateTask,
   updateTaskAfterRun,
@@ -218,6 +220,8 @@ async function runTask(
       last_result: t.last_result,
       created_at: t.created_at,
       notify_on_success: t.notify_on_success ?? false,
+      max_runs: t.max_runs ?? null,
+      run_count: t.run_count ?? 0,
       recent_runs: getRecentTaskRunLogs(t.id, 5).map((r) => ({
         id: r.id,
         run_at: r.run_at,
@@ -390,6 +394,31 @@ async function runTask(
           'Failed to send task success notification',
         );
       });
+  }
+
+  // Enforce max_runs: increment the run counter on success and auto-cancel
+  // when the limit is reached. Errors don't count toward the limit.
+  if (!error && task.max_runs != null && task.max_runs > 0) {
+    const newCount = incrementTaskRunCount(task.id);
+    if (newCount >= task.max_runs) {
+      logger.info(
+        { taskId: task.id, newCount, max_runs: task.max_runs },
+        'Task reached max_runs limit — auto-cancelling',
+      );
+      deleteTask(task.id);
+      const shortId = task.id.slice(-12);
+      await deps
+        .sendMessage(
+          task.chat_jid,
+          `🏁 Task [${task.name ? `${task.name} / ` : ''}${shortId}] completed all ${task.max_runs} scheduled run${task.max_runs === 1 ? '' : 's'} and has been removed.`,
+        )
+        .catch((notifyErr) => {
+          logger.warn(
+            { taskId: task.id, notifyErr },
+            'Failed to send max_runs completion notification',
+          );
+        });
+    }
   }
 }
 

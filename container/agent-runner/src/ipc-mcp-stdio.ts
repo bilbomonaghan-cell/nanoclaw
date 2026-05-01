@@ -188,6 +188,14 @@ echo "$prs"
       .describe(
         'Send a "✅ Task completed in Xs" message to the group when the task succeeds (default: false). Useful for maintenance tasks where you want to confirm completion. For tasks that always send a result message, leave this off to avoid double-messaging.',
       ),
+    max_runs: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Auto-cancel the task after this many successful runs. Useful for "run 4 times over 4 weeks" patterns. Errors do not count toward the limit. Omit for unlimited runs.',
+      ),
   },
   async (args) => {
     // Validate schedule_value before writing IPC
@@ -243,6 +251,7 @@ echo "$prs"
     if (args.script) data.script = args.script;
     if (args.notify_on_success) data.notifyOnSuccess = String(args.notify_on_success);
     if (args.name) data.taskName = args.name;
+    if (args.max_runs != null) data.maxRuns = String(args.max_runs);
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -336,6 +345,10 @@ server.tool(
         return { content: [{ type: 'text' as const, text: `Task "${args.task_id}" not found.` }] };
       }
 
+      const runsInfo = task.max_runs != null
+        ? `${task.run_count ?? 0}/${task.max_runs} (auto-cancels at limit)`
+        : 'unlimited';
+
       const lines: string[] = [
         `**Task: ${task.id}**`,
         ...(task.name ? [`Name: ${task.name}`] : []),
@@ -343,6 +356,7 @@ server.tool(
         `Schedule: ${task.schedule_type} — ${task.schedule_value}`,
         `Context mode: ${task.context_mode || 'group'}`,
         `Notify on success: ${task.notify_on_success ? 'yes' : 'no'}`,
+        `Runs: ${runsInfo}`,
         `Next run: ${task.next_run || 'N/A'}`,
         `Last run: ${task.last_run || 'never'}`,
         `Created: ${task.created_at || 'unknown'}`,
@@ -830,6 +844,7 @@ server.tool(
     script: z.string().nullable().optional().describe('New pre-flight bash script, or null to remove an existing script'),
     context_mode: z.enum(['group', 'isolated']).optional().describe('New context mode (group=with chat history, isolated=fresh session)'),
     notify_on_success: z.boolean().optional().describe('Enable or disable success notifications for this task'),
+    max_runs: z.number().int().positive().nullable().optional().describe('Auto-cancel after N successful runs. Pass null to remove an existing limit.'),
   },
   async (args) => {
     // Validate schedule_value if provided
@@ -870,6 +885,8 @@ server.tool(
     if (args.context_mode !== undefined) data.context_mode = args.context_mode;
     if (args.notify_on_success !== undefined)
       data.notifyOnSuccess = String(args.notify_on_success);
+    if (args.max_runs !== undefined)
+      data.maxRuns = args.max_runs != null ? String(args.max_runs) : '';  // empty string signals "clear limit"
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -2478,6 +2495,74 @@ server.tool(
         {
           type: 'text' as const,
           text: 'resume_all_tasks timed out — the host did not respond. Try again shortly.',
+        },
+      ],
+      isError: true,
+    };
+  },
+);
+
+// ─── cancel_all_tasks ─────────────────────────────────────────────────────────
+
+server.tool(
+  'cancel_all_tasks',
+  'Permanently delete all scheduled tasks for this group. Use with caution — this cannot be undone. Optionally filter by status to only cancel active or paused tasks. Main group can target another group via group_folder.',
+  {
+    status: z
+      .enum(['active', 'paused'])
+      .optional()
+      .describe('Only cancel tasks with this status. Omit to cancel ALL tasks regardless of status.'),
+    group_folder: z
+      .string()
+      .optional()
+      .describe('(Main group only) folder of a different group whose tasks to cancel.'),
+  },
+  async (args) => {
+    const queryId = `ca-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ipcTasksDir = '/workspace/ipc/tasks';
+    const responseFile = `/workspace/ipc/responses/${queryId}.json`;
+
+    const queryFilePath = `${ipcTasksDir}/cancel_all_tasks_${queryId}.json`;
+    fs.writeFileSync(
+      queryFilePath,
+      JSON.stringify({
+        type: 'cancel_all_tasks',
+        queryId,
+        groupFolder: args.group_folder,
+        status: args.status,
+      }),
+      'utf-8',
+    );
+
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (fs.existsSync(responseFile)) {
+        const raw = JSON.parse(fs.readFileSync(responseFile, 'utf-8')) as {
+          cancelled: number;
+        };
+        try { fs.unlinkSync(responseFile); } catch { /* best-effort */ }
+        const n = raw.cancelled;
+        const statusLabel = args.status ? ` ${args.status}` : '';
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: n === 0
+                ? `No${statusLabel} tasks to cancel.`
+                : `Cancelled and deleted ${n}${statusLabel} task${n === 1 ? '' : 's'}. This cannot be undone.`,
+            },
+          ],
+        };
+      }
+    }
+
+    try { fs.unlinkSync(queryFilePath); } catch { /* already processed */ }
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'cancel_all_tasks timed out — the host did not respond. Try again shortly.',
         },
       ],
       isError: true,

@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
   createTask,
+  deleteAllTasks,
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
@@ -15,6 +16,7 @@ import {
   getTaskHistory,
   getTaskRunLogById,
   getTaskStats,
+  incrementTaskRunCount,
   logTaskRun,
   pruneTaskRunLogs,
   searchMessages,
@@ -1371,5 +1373,123 @@ describe('setAllTasksStatus', () => {
 
     const changed = setAllTasksStatus('sat-d-group', 'paused');
     expect(changed).toBe(2);
+  });
+});
+
+// --- deleteAllTasks ---
+
+describe('deleteAllTasks', () => {
+  function makeTask(id: string, folder: string, status: 'active' | 'paused') {
+    createTask({
+      id,
+      group_folder: folder,
+      chat_jid: `${folder}@g.us`,
+      prompt: 'test',
+      schedule_type: 'cron',
+      schedule_value: '0 * * * *',
+      next_run: new Date().toISOString(),
+      status,
+      created_at: new Date().toISOString(),
+      name: null,
+      script: null,
+      context_mode: 'group',
+      notify_on_success: null,
+    });
+  }
+
+  it('deletes all tasks for a group when no status filter', () => {
+    makeTask('dat-a1', 'dat-group', 'active');
+    makeTask('dat-a2', 'dat-group', 'paused');
+
+    const deleted = deleteAllTasks('dat-group');
+    expect(deleted).toBe(2);
+    expect(getTaskById('dat-a1')).toBeUndefined();
+    expect(getTaskById('dat-a2')).toBeUndefined();
+  });
+
+  it('only deletes tasks matching the status filter', () => {
+    makeTask('dat-b1', 'dat-b-group', 'active');
+    makeTask('dat-b2', 'dat-b-group', 'paused');
+
+    const deleted = deleteAllTasks('dat-b-group', 'active');
+    expect(deleted).toBe(1);
+    expect(getTaskById('dat-b1')).toBeUndefined();
+    expect(getTaskById('dat-b2')).toBeDefined(); // paused task untouched
+  });
+
+  it('returns 0 when no tasks match', () => {
+    expect(deleteAllTasks('empty-dat-group')).toBe(0);
+  });
+
+  it('isolates by group_folder', () => {
+    makeTask('dat-c1', 'dat-c1-group', 'active');
+    makeTask('dat-c2', 'dat-c2-group', 'active');
+
+    deleteAllTasks('dat-c1-group');
+    expect(getTaskById('dat-c1')).toBeUndefined();
+    expect(getTaskById('dat-c2')).toBeDefined(); // other group untouched
+  });
+
+  it('also removes associated task_run_logs', () => {
+    makeTask('dat-d1', 'dat-d-group', 'active');
+    logTaskRun({
+      task_id: 'dat-d1',
+      run_at: new Date().toISOString(),
+      duration_ms: 100,
+      status: 'success',
+      result: 'ok',
+      error: null,
+    });
+
+    deleteAllTasks('dat-d-group');
+    // Task is gone
+    expect(getTaskById('dat-d1')).toBeUndefined();
+    // Logs are gone too (no FK violation on re-insert with same task id)
+    const logs = getRecentTaskRunLogs('dat-d1', 10);
+    expect(logs).toHaveLength(0);
+  });
+});
+
+// --- incrementTaskRunCount ---
+
+describe('incrementTaskRunCount', () => {
+  function makeTask(id: string) {
+    createTask({
+      id,
+      group_folder: 'itrc-group',
+      chat_jid: 'itrc@g.us',
+      prompt: 'test',
+      schedule_type: 'cron',
+      schedule_value: '0 * * * *',
+      next_run: new Date().toISOString(),
+      status: 'active',
+      created_at: new Date().toISOString(),
+      name: null,
+      script: null,
+      context_mode: 'group',
+      notify_on_success: null,
+      max_runs: 3,
+      run_count: 0,
+    });
+  }
+
+  it('starts at 0 and increments to 1', () => {
+    makeTask('itrc-1');
+    const count = incrementTaskRunCount('itrc-1');
+    expect(count).toBe(1);
+    expect(getTaskById('itrc-1')!.run_count).toBe(1);
+  });
+
+  it('increments across multiple calls', () => {
+    makeTask('itrc-2');
+    incrementTaskRunCount('itrc-2');
+    incrementTaskRunCount('itrc-2');
+    const count = incrementTaskRunCount('itrc-2');
+    expect(count).toBe(3);
+  });
+
+  it('returns 0 for unknown task id', () => {
+    const count = incrementTaskRunCount('nonexistent-task-id');
+    expect(count).toBe(0);
   });
 });

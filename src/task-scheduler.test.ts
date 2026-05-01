@@ -196,4 +196,126 @@ describe('task scheduler', () => {
       (new Date(nextRun!).getTime() - new Date(scheduledTime).getTime()) % ms;
     expect(offset).toBe(0);
   });
+
+  it('auto-cancels task and notifies group when max_runs is reached', async () => {
+    const { setRegisteredGroup } = await import('./db.js');
+    setRegisteredGroup('maxruns@g.us', {
+      name: 'MaxRuns Group',
+      folder: 'maxruns-group',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    createTask({
+      id: 'task-max-runs',
+      group_folder: 'maxruns-group',
+      chat_jid: 'maxruns@g.us',
+      prompt: 'run once then stop',
+      schedule_type: 'once',
+      schedule_value: '2026-01-01T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 1000).toISOString(),
+      status: 'active',
+      created_at: '2026-01-01T00:00:00.000Z',
+      max_runs: 1,
+      run_count: 0,
+    });
+
+    vi.mocked(runContainerAgent).mockResolvedValueOnce({
+      status: 'success',
+      result: 'done',
+    });
+
+    const sentMessages: { jid: string; text: string }[] = [];
+    const sendMessage = vi.fn(async (jid: string, text: string) => {
+      sentMessages.push({ jid, text });
+    });
+
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'maxruns@g.us': {
+          name: 'MaxRuns Group',
+          folder: 'maxruns-group',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Task should be deleted from the DB after reaching max_runs
+    expect(getTaskById('task-max-runs')).toBeUndefined();
+
+    // Should have sent the completion message
+    expect(sentMessages.length).toBe(1);
+    expect(sentMessages[0].jid).toBe('maxruns@g.us');
+    expect(sentMessages[0].text).toMatch(/🏁.*1 scheduled run/);
+  });
+
+  it('does not auto-cancel when max_runs not set', async () => {
+    const { setRegisteredGroup } = await import('./db.js');
+    setRegisteredGroup('unlimited@g.us', {
+      name: 'Unlimited Group',
+      folder: 'unlimited-group',
+      trigger: '@Andy',
+      added_at: '2024-01-01T00:00:00.000Z',
+    });
+
+    createTask({
+      id: 'task-unlimited',
+      group_folder: 'unlimited-group',
+      chat_jid: 'unlimited@g.us',
+      prompt: 'run forever',
+      schedule_type: 'cron',
+      schedule_value: '* * * * *',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 1000).toISOString(),
+      status: 'active',
+      created_at: '2026-01-01T00:00:00.000Z',
+      max_runs: null,
+      run_count: 0,
+    });
+
+    vi.mocked(runContainerAgent).mockResolvedValueOnce({
+      status: 'success',
+      result: 'done',
+    });
+
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'unlimited@g.us': {
+          name: 'Unlimited Group',
+          folder: 'unlimited-group',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage: vi.fn(),
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Task should still exist (not auto-cancelled)
+    expect(getTaskById('task-unlimited')).toBeDefined();
+  });
 });

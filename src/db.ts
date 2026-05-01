@@ -177,6 +177,24 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add max_runs column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN max_runs INTEGER DEFAULT NULL`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add run_count column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN run_count INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -426,8 +444,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, name, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, name, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success, max_runs, run_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -443,6 +461,8 @@ export function createTask(
     task.status,
     task.created_at,
     task.notify_on_success ? 1 : 0,
+    task.max_runs ?? null,
+    task.run_count ?? 0,
   );
 }
 
@@ -480,6 +500,7 @@ export function updateTask(
       | 'script'
       | 'context_mode'
       | 'notify_on_success'
+      | 'max_runs'
     >
   >,
 ): void {
@@ -522,6 +543,10 @@ export function updateTask(
     fields.push('notify_on_success = ?');
     values.push(updates.notify_on_success ? 1 : 0);
   }
+  if (updates.max_runs !== undefined) {
+    fields.push('max_runs = ?');
+    values.push(updates.max_runs ?? null);
+  }
 
   if (fields.length === 0) return;
 
@@ -535,6 +560,63 @@ export function deleteTask(id: string): void {
   // Delete child records first (FK constraint)
   db.prepare('DELETE FROM task_run_logs WHERE task_id = ?').run(id);
   db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id);
+}
+
+/**
+ * Increment the run_count for a task and return the new count.
+ * Used by the task scheduler to track successful runs for max_runs enforcement.
+ */
+export function incrementTaskRunCount(id: string): number {
+  db.prepare(
+    `UPDATE scheduled_tasks SET run_count = run_count + 1 WHERE id = ?`,
+  ).run(id);
+  const row = db
+    .prepare(`SELECT run_count FROM scheduled_tasks WHERE id = ?`)
+    .get(id) as { run_count: number } | undefined;
+  return row?.run_count ?? 0;
+}
+
+/**
+ * Delete all tasks for a group, optionally filtered by status.
+ * Returns the number of tasks deleted.
+ */
+export function deleteAllTasks(
+  groupFolder: string,
+  status?: 'active' | 'paused',
+): number {
+  // Collect task IDs first so we can delete logs too
+  const taskIds = (
+    status !== undefined
+      ? (db
+          .prepare(
+            `SELECT id FROM scheduled_tasks WHERE group_folder = ? AND status = ?`,
+          )
+          .all(groupFolder, status) as { id: string }[])
+      : (db
+          .prepare(`SELECT id FROM scheduled_tasks WHERE group_folder = ?`)
+          .all(groupFolder) as { id: string }[])
+  ).map((r) => r.id);
+
+  if (taskIds.length === 0) return 0;
+
+  // Delete run logs for these tasks first (FK constraint)
+  const placeholders = taskIds.map(() => '?').join(',');
+  db.prepare(`DELETE FROM task_run_logs WHERE task_id IN (${placeholders})`).run(
+    ...taskIds,
+  );
+
+  // Delete the tasks themselves
+  if (status !== undefined) {
+    db.prepare(
+      `DELETE FROM scheduled_tasks WHERE group_folder = ? AND status = ?`,
+    ).run(groupFolder, status);
+  } else {
+    db.prepare(`DELETE FROM scheduled_tasks WHERE group_folder = ?`).run(
+      groupFolder,
+    );
+  }
+
+  return taskIds.length;
 }
 
 export function getDueTasks(): ScheduledTask[] {

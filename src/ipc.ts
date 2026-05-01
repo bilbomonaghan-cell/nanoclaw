@@ -7,6 +7,7 @@ import { DATA_DIR, GROUPS_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import {
   createTask,
+  deleteAllTasks,
   deleteTask,
   getChatStats,
   getRecentMessages,
@@ -195,6 +196,7 @@ export async function processTaskIpc(
     // For schedule_task / update_task
     notifyOnSuccess?: boolean | string;
     taskName?: string;
+    maxRuns?: string | number | null;
     // For get_task_log
     runLogId?: number;
     // For snooze_task
@@ -202,6 +204,13 @@ export async function processTaskIpc(
     // For get_task_history
     historyLimit?: number;
     historyFromDays?: number;
+    // For cancel_all_tasks
+    status?: string;
+    // For set_group_instructions
+    targetFolder?: string;
+    text?: string;
+    mode?: string;
+    sectionHeading?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -285,6 +294,11 @@ export async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
+        const maxRunsRaw = data.maxRuns;
+        const maxRunsParsed =
+          maxRunsRaw != null ? Number(maxRunsRaw) : NaN;
+        const maxRuns =
+          !isNaN(maxRunsParsed) && maxRunsParsed > 0 ? maxRunsParsed : null;
         createTask({
           id: taskId,
           name: data.taskName || null,
@@ -300,6 +314,8 @@ export async function processTaskIpc(
           created_at: new Date().toISOString(),
           notify_on_success:
             data.notifyOnSuccess === true || data.notifyOnSuccess === 'true',
+          max_runs: maxRuns,
+          run_count: 0,
         });
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
@@ -399,6 +415,15 @@ export async function processTaskIpc(
         if (data.notifyOnSuccess !== undefined)
           updates.notify_on_success =
             data.notifyOnSuccess === true || data.notifyOnSuccess === 'true';
+        if (data.maxRuns !== undefined) {
+          // Empty string means "clear the limit"; otherwise parse the number
+          if (data.maxRuns === '' || data.maxRuns === null) {
+            updates.max_runs = null;
+          } else {
+            const parsed = Number(data.maxRuns);
+            updates.max_runs = !isNaN(parsed) && parsed > 0 ? parsed : null;
+          }
+        }
 
         // Recompute next_run if schedule changed
         if (data.schedule_type || data.schedule_value) {
@@ -835,6 +860,35 @@ export async function processTaskIpc(
         fs.writeFileSync(
           path.join(raResponsesDir, `${raQueryId}.json`),
           JSON.stringify({ resumed: resumedCount }),
+          'utf-8',
+        );
+      }
+      break;
+    }
+
+    case 'cancel_all_tasks': {
+      const caQueryId = data.queryId as string;
+      // Main can cancel any group; others can only cancel their own
+      const caGroupFolder =
+        isMain && typeof data.groupFolder === 'string'
+          ? data.groupFolder
+          : sourceGroup;
+      const caStatus =
+        data.status === 'active' || data.status === 'paused'
+          ? data.status
+          : undefined;
+      const cancelledCount = deleteAllTasks(caGroupFolder, caStatus);
+      logger.info(
+        { sourceGroup, targetGroup: caGroupFolder, cancelledCount, caStatus },
+        'cancel_all_tasks: deleted tasks',
+      );
+      if (caQueryId) {
+        const caIpcBase = path.join(DATA_DIR, 'ipc');
+        const caResponsesDir = path.join(caIpcBase, sourceGroup, 'responses');
+        fs.mkdirSync(caResponsesDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(caResponsesDir, `${caQueryId}.json`),
+          JSON.stringify({ cancelled: cancelledCount }),
           'utf-8',
         );
       }
