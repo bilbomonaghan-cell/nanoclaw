@@ -195,6 +195,24 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add retry_on_failure column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN retry_on_failure INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add retry_attempt column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN retry_attempt INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -444,8 +462,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, name, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success, max_runs, run_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, name, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success, max_runs, run_count, retry_on_failure, retry_attempt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -463,6 +481,8 @@ export function createTask(
     task.notify_on_success ? 1 : 0,
     task.max_runs ?? null,
     task.run_count ?? 0,
+    task.retry_on_failure ?? 0,
+    task.retry_attempt ?? 0,
   );
 }
 
@@ -501,6 +521,7 @@ export function updateTask(
       | 'context_mode'
       | 'notify_on_success'
       | 'max_runs'
+      | 'retry_on_failure'
     >
   >,
 ): void {
@@ -547,6 +568,10 @@ export function updateTask(
     fields.push('max_runs = ?');
     values.push(updates.max_runs ?? null);
   }
+  if (updates.retry_on_failure !== undefined) {
+    fields.push('retry_on_failure = ?');
+    values.push(updates.retry_on_failure ?? 0);
+  }
 
   if (fields.length === 0) return;
 
@@ -554,6 +579,17 @@ export function updateTask(
   db.prepare(
     `UPDATE scheduled_tasks SET ${fields.join(', ')} WHERE id = ?`,
   ).run(...values);
+}
+
+/**
+ * Update the retry_attempt counter for a task.
+ * Called by the scheduler when retrying a failed task or resetting after success.
+ */
+export function setRetryAttempt(id: string, attempt: number): void {
+  db.prepare(`UPDATE scheduled_tasks SET retry_attempt = ? WHERE id = ?`).run(
+    attempt,
+    id,
+  );
 }
 
 export function deleteTask(id: string): void {
@@ -601,9 +637,9 @@ export function deleteAllTasks(
 
   // Delete run logs for these tasks first (FK constraint)
   const placeholders = taskIds.map(() => '?').join(',');
-  db.prepare(`DELETE FROM task_run_logs WHERE task_id IN (${placeholders})`).run(
-    ...taskIds,
-  );
+  db.prepare(
+    `DELETE FROM task_run_logs WHERE task_id IN (${placeholders})`,
+  ).run(...taskIds);
 
   // Delete the tasks themselves
   if (status !== undefined) {

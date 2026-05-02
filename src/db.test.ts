@@ -22,6 +22,7 @@ import {
   searchMessages,
   setAllTasksStatus,
   setRegisteredGroup,
+  setRetryAttempt,
   storeChatMetadata,
   storeMessage,
   updateTask,
@@ -1491,5 +1492,84 @@ describe('incrementTaskRunCount', () => {
   it('returns 0 for unknown task id', () => {
     const count = incrementTaskRunCount('nonexistent-task-id');
     expect(count).toBe(0);
+  });
+});
+
+// --- setRetryAttempt + retry_on_failure ---
+
+describe('setRetryAttempt and retry_on_failure', () => {
+  function makeRetryTask(id: string, retryOnFailure = 3) {
+    createTask({
+      id,
+      group_folder: 'retry-group',
+      chat_jid: 'retry@g.us',
+      prompt: 'test',
+      schedule_type: 'cron',
+      schedule_value: '0 * * * *',
+      next_run: new Date().toISOString(),
+      status: 'active',
+      created_at: new Date().toISOString(),
+      name: null,
+      script: null,
+      context_mode: 'isolated',
+      notify_on_success: null,
+      max_runs: null,
+      run_count: 0,
+      retry_on_failure: retryOnFailure,
+      retry_attempt: 0,
+    });
+  }
+
+  it('stores retry_on_failure and retry_attempt on creation', () => {
+    makeRetryTask('rt-1', 2);
+    const task = getTaskById('rt-1')!;
+    expect(task.retry_on_failure).toBe(2);
+    expect(task.retry_attempt).toBe(0);
+  });
+
+  it('setRetryAttempt updates the attempt counter', () => {
+    makeRetryTask('rt-2');
+    setRetryAttempt('rt-2', 1);
+    expect(getTaskById('rt-2')!.retry_attempt).toBe(1);
+    setRetryAttempt('rt-2', 2);
+    expect(getTaskById('rt-2')!.retry_attempt).toBe(2);
+  });
+
+  it('setRetryAttempt can reset to 0', () => {
+    makeRetryTask('rt-3');
+    setRetryAttempt('rt-3', 3);
+    setRetryAttempt('rt-3', 0);
+    expect(getTaskById('rt-3')!.retry_attempt).toBe(0);
+  });
+
+  it('updateTask can change retry_on_failure', () => {
+    makeRetryTask('rt-4', 1);
+    updateTask('rt-4', { retry_on_failure: 5 });
+    expect(getTaskById('rt-4')!.retry_on_failure).toBe(5);
+    updateTask('rt-4', { retry_on_failure: 0 });
+    expect(getTaskById('rt-4')!.retry_on_failure).toBe(0);
+  });
+
+  it('defaults to 0 when not specified', () => {
+    createTask({
+      id: 'rt-5',
+      group_folder: 'retry-group',
+      chat_jid: 'retry@g.us',
+      prompt: 'test',
+      schedule_type: 'cron',
+      schedule_value: '0 * * * *',
+      next_run: null,
+      status: 'active',
+      created_at: new Date().toISOString(),
+      name: null,
+      script: null,
+      context_mode: 'isolated',
+      notify_on_success: null,
+      max_runs: null,
+      run_count: 0,
+    });
+    const task = getTaskById('rt-5')!;
+    expect(task.retry_on_failure ?? 0).toBe(0);
+    expect(task.retry_attempt ?? 0).toBe(0);
   });
 });

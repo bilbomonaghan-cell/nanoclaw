@@ -14,6 +14,8 @@ const envConfig = readEnvFile([
   'TZ',
   'SCOUT_MCP_URL',
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
+  'CONTAINER_MEMORY_LIMIT',
+  'CONTAINER_CPU_LIMIT',
 ]);
 
 export const ASSISTANT_NAME =
@@ -126,3 +128,14 @@ export const DASHBOARD_PORT = parseInt(
   10,
 );
 export const BASE_URL = process.env.BASE_URL || '';
+
+// Docker resource limits for agent containers.
+// Set CONTAINER_MEMORY_LIMIT (e.g. "2g", "512m") or CONTAINER_CPU_LIMIT (e.g. "1.5")
+// in .env or host environment to cap container resource usage.
+// Empty string (default) means no limit is applied.
+export const CONTAINER_MEMORY_LIMIT =
+  process.env.CONTAINER_MEMORY_LIMIT ||
+  envConfig.CONTAINER_MEMORY_LIMIT ||
+  '';
+export const CONTAINER_CPU_LIMIT =
+  process.env.CONTAINER_CPU_LIMIT || envConfig.CONTAINER_CPU_LIMIT || '';

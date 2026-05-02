@@ -359,6 +359,8 @@ async function runAgent(
       notify_on_success: t.notify_on_success ?? false,
       max_runs: t.max_runs ?? null,
       run_count: t.run_count ?? 0,
+      retry_on_failure: t.retry_on_failure ?? 0,
+      retry_attempt: t.retry_attempt ?? 0,
       recent_runs: getRecentTaskRunLogs(t.id, 5).map((r) => ({
         id: r.id,
         run_at: r.run_at,

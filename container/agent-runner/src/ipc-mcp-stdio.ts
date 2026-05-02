@@ -196,6 +196,15 @@ echo "$prs"
       .describe(
         'Auto-cancel the task after this many successful runs. Useful for "run 4 times over 4 weeks" patterns. Errors do not count toward the limit. Omit for unlimited runs.',
       ),
+    retry_on_failure: z
+      .number()
+      .int()
+      .min(0)
+      .max(5)
+      .optional()
+      .describe(
+        'Number of automatic retries if the task fails (0–5, default 0 = disabled). On failure the task retries with backoff: 60s → 5min → 30min. A retry notification is sent to chat on each retry attempt. The failure notification is only sent after all retries are exhausted.',
+      ),
   },
   async (args) => {
     // Validate schedule_value before writing IPC
@@ -252,6 +261,8 @@ echo "$prs"
     if (args.notify_on_success) data.notifyOnSuccess = String(args.notify_on_success);
     if (args.name) data.taskName = args.name;
     if (args.max_runs != null) data.maxRuns = String(args.max_runs);
+    if (args.retry_on_failure != null && args.retry_on_failure > 0)
+      data.retryOnFailure = String(args.retry_on_failure);
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -348,6 +359,9 @@ server.tool(
       const runsInfo = task.max_runs != null
         ? `${task.run_count ?? 0}/${task.max_runs} (auto-cancels at limit)`
         : 'unlimited';
+      const retryInfo = (task.retry_on_failure ?? 0) > 0
+        ? `${task.retry_on_failure} (currently at attempt ${task.retry_attempt ?? 0}/${task.retry_on_failure})`
+        : 'disabled';
 
       const lines: string[] = [
         `**Task: ${task.id}**`,
@@ -356,6 +370,7 @@ server.tool(
         `Schedule: ${task.schedule_type} — ${task.schedule_value}`,
         `Context mode: ${task.context_mode || 'group'}`,
         `Notify on success: ${task.notify_on_success ? 'yes' : 'no'}`,
+        `Retry on failure: ${retryInfo}`,
         `Runs: ${runsInfo}`,
         `Next run: ${task.next_run || 'N/A'}`,
         `Last run: ${task.last_run || 'never'}`,
@@ -845,6 +860,7 @@ server.tool(
     context_mode: z.enum(['group', 'isolated']).optional().describe('New context mode (group=with chat history, isolated=fresh session)'),
     notify_on_success: z.boolean().optional().describe('Enable or disable success notifications for this task'),
     max_runs: z.number().int().positive().nullable().optional().describe('Auto-cancel after N successful runs. Pass null to remove an existing limit.'),
+    retry_on_failure: z.number().int().min(0).max(5).nullable().optional().describe('Auto-retry count on failure (0–5). Pass 0 or null to disable retries.'),
   },
   async (args) => {
     // Validate schedule_value if provided
@@ -887,6 +903,8 @@ server.tool(
       data.notifyOnSuccess = String(args.notify_on_success);
     if (args.max_runs !== undefined)
       data.maxRuns = args.max_runs != null ? String(args.max_runs) : '';  // empty string signals "clear limit"
+    if (args.retry_on_failure !== undefined)
+      data.retryOnFailure = args.retry_on_failure != null ? String(args.retry_on_failure) : '';  // empty/0 disables
 
     writeIpcFile(TASKS_DIR, data);
 

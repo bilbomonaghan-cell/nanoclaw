@@ -16,6 +16,7 @@ import {
   getTaskById,
   incrementTaskRunCount,
   logTaskRun,
+  setRetryAttempt,
   updateTask,
   updateTaskAfterRun,
 } from './db.js';
@@ -25,6 +26,16 @@ import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 const SCRIPT_TIMEOUT_MS = 30_000;
+
+/**
+ * Retry backoff delays for failed tasks.
+ * attempt=1 → 60s, attempt=2 → 300s, attempt=3+ → 1800s (cap)
+ */
+export function retryDelayMs(attempt: number): number {
+  if (attempt <= 1) return 60_000;
+  if (attempt === 2) return 300_000;
+  return 1_800_000;
+}
 
 export interface ScriptResult {
   wakeAgent: boolean;
@@ -222,6 +233,8 @@ async function runTask(
       notify_on_success: t.notify_on_success ?? false,
       max_runs: t.max_runs ?? null,
       run_count: t.run_count ?? 0,
+      retry_on_failure: t.retry_on_failure ?? 0,
+      retry_attempt: t.retry_attempt ?? 0,
       recent_runs: getRecentTaskRunLogs(t.id, 5).map((r) => ({
         id: r.id,
         run_at: r.run_at,
@@ -351,6 +364,59 @@ async function runTask(
     error,
   });
 
+  // --- Retry-on-failure logic ---
+  // When a task fails and retry_on_failure > 0, schedule a quick retry instead
+  // of immediately moving to the next cron window and notifying the group.
+  // After all retries are exhausted, fall through to the normal failure path.
+  if (error) {
+    const maxRetries = task.retry_on_failure ?? 0;
+    const currentAttempt = task.retry_attempt ?? 0;
+
+    if (maxRetries > 0 && currentAttempt < maxRetries) {
+      // Schedule a retry after a short backoff delay
+      const nextAttempt = currentAttempt + 1;
+      const delayMs = retryDelayMs(nextAttempt);
+      const retryAt = new Date(Date.now() + delayMs).toISOString();
+
+      setRetryAttempt(task.id, nextAttempt);
+      updateTaskAfterRun(task.id, retryAt, `Retry ${nextAttempt}/${maxRetries}: ${error.slice(0, 100)}`);
+
+      const shortId = task.id.slice(-12);
+      const errMsg = error.length > 100 ? error.slice(0, 100) + '…' : error;
+      const delaySec = Math.round(delayMs / 1000);
+      await deps
+        .sendMessage(
+          task.chat_jid,
+          `⏱️ Task [${shortId}] failed (attempt ${nextAttempt}/${maxRetries + 1}), retrying in ${delaySec}s: ${errMsg}`,
+        )
+        .catch((notifyErr) => {
+          logger.warn(
+            { taskId: task.id, notifyErr },
+            'Failed to send task retry notification',
+          );
+        });
+
+      logger.info(
+        { taskId: task.id, nextAttempt, maxRetries, retryAt },
+        'Task scheduled for retry',
+      );
+
+      // Skip normal post-run handling — don't advance the cron window yet
+      return;
+    }
+
+    // All retries exhausted (or no retries configured) — reset attempt counter
+    if (currentAttempt > 0) {
+      setRetryAttempt(task.id, 0);
+    }
+  }
+  // --- End retry logic ---
+
+  // On success, reset the retry attempt counter if it was non-zero
+  if (!error && (task.retry_attempt ?? 0) > 0) {
+    setRetryAttempt(task.id, 0);
+  }
+
   const nextRun = computeNextRun(task);
   const resultSummary = error
     ? `Error: ${error}`
@@ -366,10 +432,12 @@ async function runTask(
     const nextRunMsg = nextRun
       ? ` Next attempt: ${nextRun.slice(0, 16).replace('T', ' ')} UTC`
       : '';
+    const retryExhaustedNote =
+      (task.retry_on_failure ?? 0) > 0 ? ' (all retries exhausted)' : '';
     await deps
       .sendMessage(
         task.chat_jid,
-        `⚠️ Task [${shortId}] failed: ${errMsg}${nextRunMsg}`,
+        `⚠️ Task [${shortId}] failed${retryExhaustedNote}: ${errMsg}${nextRunMsg}`,
       )
       .catch((notifyErr) => {
         logger.warn(

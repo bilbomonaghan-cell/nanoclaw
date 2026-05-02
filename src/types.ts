@@ -77,6 +77,10 @@ export interface ScheduledTask {
   max_runs?: number | null;
   /** Number of successful runs so far. */
   run_count?: number;
+  /** Auto-retry on failure: number of extra attempts before giving up (0 = disabled, max 5). */
+  retry_on_failure?: number | null;
+  /** Current consecutive failure attempt counter (reset to 0 after any success). */
+  retry_attempt?: number;
 }
 
 export interface TaskRunLog {

@@ -19,6 +19,8 @@ vi.mock('./config.js', () => ({
   SCOUT_MCP_URL: '',
   CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
   TIMEZONE: 'America/Los_Angeles',
+  CONTAINER_MEMORY_LIMIT: '',
+  CONTAINER_CPU_LIMIT: '',
 }));
 
 // Mock logger
@@ -90,6 +92,7 @@ vi.mock('child_process', async () => {
   };
 });
 
+import { spawn } from 'child_process';
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
@@ -210,5 +213,17 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+
+  it('does not include --memory or --cpus when limits are not configured', async () => {
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const spawnCall = vi.mocked(spawn).mock.calls.at(-1)!;
+    const containerArgs = spawnCall[1] as string[];
+    expect(containerArgs).not.toContain('--memory');
+    expect(containerArgs).not.toContain('--cpus');
   });
 });

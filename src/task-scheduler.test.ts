@@ -9,6 +9,7 @@ import { _initTestDatabase, createTask, getTaskById } from './db.js';
 import {
   _resetSchedulerLoopForTests,
   computeNextRun,
+  retryDelayMs,
   startSchedulerLoop,
 } from './task-scheduler.js';
 import { runContainerAgent } from './container-runner.js';
@@ -317,5 +318,202 @@ describe('task scheduler', () => {
 
     // Task should still exist (not auto-cancelled)
     expect(getTaskById('task-unlimited')).toBeDefined();
+  });
+});
+
+// --- retryDelayMs ---
+
+describe('retryDelayMs', () => {
+  it('returns 60s for first attempt', () => {
+    expect(retryDelayMs(1)).toBe(60_000);
+  });
+
+  it('returns 5min for second attempt', () => {
+    expect(retryDelayMs(2)).toBe(300_000);
+  });
+
+  it('caps at 30min for third attempt and beyond', () => {
+    expect(retryDelayMs(3)).toBe(1_800_000);
+    expect(retryDelayMs(5)).toBe(1_800_000);
+  });
+});
+
+// --- retry_on_failure in scheduler ---
+
+describe('task retry on failure', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+    _resetSchedulerLoopForTests();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('schedules retry instead of final failure notification on first failure', async () => {
+    createTask({
+      id: 'task-retry',
+      group_folder: 'retry-group',
+      chat_jid: 'retry@g.us',
+      prompt: 'run',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 1000).toISOString(),
+      status: 'active',
+      created_at: new Date().toISOString(),
+      retry_on_failure: 2,
+      retry_attempt: 0,
+    });
+
+    vi.mocked(runContainerAgent).mockResolvedValueOnce({
+      status: 'error',
+      result: null,
+      error: 'Container crashed',
+    });
+
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'retry@g.us': {
+          name: 'Retry Group',
+          folder: 'retry-group',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    const task = getTaskById('task-retry')!;
+    // retry_attempt should have been incremented to 1
+    expect(task.retry_attempt).toBe(1);
+
+    // A retry notification should have been sent, not a failure notification
+    const sentMessages = sendMessage.mock.calls.map((c) => c[1] as string);
+    expect(sentMessages.some((m) => m.includes('⏱️'))).toBe(true);
+    expect(sentMessages.some((m) => m.includes('⚠️'))).toBe(false);
+
+    // next_run should be ~60s in the future (first retry delay)
+    const nextRun = new Date(task.next_run!).getTime();
+    const now = Date.now();
+    expect(nextRun).toBeGreaterThan(now + 50_000);
+    expect(nextRun).toBeLessThan(now + 70_000);
+  });
+
+  it('sends failure notification after all retries are exhausted', async () => {
+    createTask({
+      id: 'task-exhausted',
+      group_folder: 'retry-group',
+      chat_jid: 'retry@g.us',
+      prompt: 'run',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 1000).toISOString(),
+      status: 'active',
+      created_at: new Date().toISOString(),
+      retry_on_failure: 2,
+      retry_attempt: 2, // already used all retries
+    });
+
+    vi.mocked(runContainerAgent).mockResolvedValueOnce({
+      status: 'error',
+      result: null,
+      error: 'Still broken',
+    });
+
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'retry@g.us': {
+          name: 'Retry Group',
+          folder: 'retry-group',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage,
+    });
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    const task = getTaskById('task-exhausted')!;
+    // retry_attempt should be reset to 0
+    expect(task.retry_attempt).toBe(0);
+
+    // Should have sent the final failure notification (⚠️) not a retry notice
+    const sentMessages = sendMessage.mock.calls.map((c) => c[1] as string);
+    expect(sentMessages.some((m) => m.includes('⚠️') && m.includes('all retries exhausted'))).toBe(true);
+    expect(sentMessages.some((m) => m.includes('⏱️'))).toBe(false);
+  });
+
+  it('resets retry_attempt to 0 on task success after previous failures', async () => {
+    createTask({
+      id: 'task-recovered',
+      group_folder: 'retry-group',
+      chat_jid: 'retry@g.us',
+      prompt: 'run',
+      schedule_type: 'cron',
+      schedule_value: '0 9 * * *',
+      context_mode: 'isolated',
+      next_run: new Date(Date.now() - 1000).toISOString(),
+      status: 'active',
+      created_at: new Date().toISOString(),
+      retry_on_failure: 3,
+      retry_attempt: 1, // was on first retry, now succeeds
+    });
+
+    vi.mocked(runContainerAgent).mockResolvedValueOnce({
+      status: 'success',
+      result: 'All good',
+    });
+
+    const enqueueTask = vi.fn(
+      (_groupJid: string, _taskId: string, fn: () => Promise<void>) => {
+        void fn();
+      },
+    );
+
+    startSchedulerLoop({
+      registeredGroups: () => ({
+        'retry@g.us': {
+          name: 'Retry Group',
+          folder: 'retry-group',
+          trigger: '@Andy',
+          added_at: '2024-01-01T00:00:00.000Z',
+        },
+      }),
+      getSessions: () => ({}),
+      queue: { enqueueTask } as any,
+      onProcess: () => {},
+      sendMessage: vi.fn(),
+    });
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    // retry_attempt should be reset to 0 after success
+    expect(getTaskById('task-recovered')!.retry_attempt).toBe(0);
   });
 });

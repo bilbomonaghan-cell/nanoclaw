@@ -197,6 +197,7 @@ export async function processTaskIpc(
     notifyOnSuccess?: boolean | string;
     taskName?: string;
     maxRuns?: string | number | null;
+    retryOnFailure?: string | number | null;
     // For get_task_log
     runLogId?: number;
     // For snooze_task
@@ -295,10 +296,18 @@ export async function processTaskIpc(
             ? data.context_mode
             : 'isolated';
         const maxRunsRaw = data.maxRuns;
-        const maxRunsParsed =
-          maxRunsRaw != null ? Number(maxRunsRaw) : NaN;
+        const maxRunsParsed = maxRunsRaw != null ? Number(maxRunsRaw) : NaN;
         const maxRuns =
           !isNaN(maxRunsParsed) && maxRunsParsed > 0 ? maxRunsParsed : null;
+        const retryOnFailureRaw = data.retryOnFailure;
+        const retryOnFailureParsed =
+          retryOnFailureRaw != null ? Number(retryOnFailureRaw) : NaN;
+        const retryOnFailure =
+          !isNaN(retryOnFailureParsed) &&
+          retryOnFailureParsed > 0 &&
+          retryOnFailureParsed <= 5
+            ? Math.floor(retryOnFailureParsed)
+            : 0;
         createTask({
           id: taskId,
           name: data.taskName || null,
@@ -316,6 +325,8 @@ export async function processTaskIpc(
             data.notifyOnSuccess === true || data.notifyOnSuccess === 'true',
           max_runs: maxRuns,
           run_count: 0,
+          retry_on_failure: retryOnFailure,
+          retry_attempt: 0,
         });
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
@@ -422,6 +433,16 @@ export async function processTaskIpc(
           } else {
             const parsed = Number(data.maxRuns);
             updates.max_runs = !isNaN(parsed) && parsed > 0 ? parsed : null;
+          }
+        }
+        if (data.retryOnFailure !== undefined) {
+          // Empty string / null means "disable retries"
+          if (data.retryOnFailure === '' || data.retryOnFailure === null) {
+            updates.retry_on_failure = 0;
+          } else {
+            const parsed = Math.floor(Number(data.retryOnFailure));
+            updates.retry_on_failure =
+              !isNaN(parsed) && parsed > 0 && parsed <= 5 ? parsed : 0;
           }
         }
 
