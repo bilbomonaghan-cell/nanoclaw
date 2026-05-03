@@ -226,4 +226,43 @@ describe('container-runner timeout behavior', () => {
     expect(containerArgs).not.toContain('--memory');
     expect(containerArgs).not.toContain('--cpus');
   });
+
+  it('injects extra env vars from extraEnv into docker run args', async () => {
+    const inputWithEnv = {
+      ...testInput,
+      extraEnv: { MY_API_KEY: 'secret123', TARGET_ENV: 'production' },
+    };
+    const resultPromise = runContainerAgent(testGroup, inputWithEnv, () => {});
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const spawnCall = vi.mocked(spawn).mock.calls.at(-1)!;
+    const containerArgs = spawnCall[1] as string[];
+    const envArgs = containerArgs
+      .map((a, i) => (a === '-e' ? containerArgs[i + 1] : null))
+      .filter(Boolean);
+    expect(envArgs).toContain('MY_API_KEY=secret123');
+    expect(envArgs).toContain('TARGET_ENV=production');
+  });
+
+  it('rejects invalid env var key names (injection protection)', async () => {
+    const inputWithBadEnv = {
+      ...testInput,
+      extraEnv: { 'VALID_KEY': 'ok', '123INVALID': 'bad', 'HAS SPACE': 'bad' },
+    };
+    const resultPromise = runContainerAgent(testGroup, inputWithBadEnv, () => {});
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const spawnCall = vi.mocked(spawn).mock.calls.at(-1)!;
+    const containerArgs = spawnCall[1] as string[];
+    const envArgs = containerArgs
+      .map((a, i) => (a === '-e' ? containerArgs[i + 1] : null))
+      .filter(Boolean);
+    expect(envArgs).toContain('VALID_KEY=ok');
+    expect(envArgs).not.toContain('123INVALID=bad');
+    expect(envArgs).not.toContain('HAS SPACE=bad');
+  });
 });

@@ -198,6 +198,8 @@ export async function processTaskIpc(
     taskName?: string;
     maxRuns?: string | number | null;
     retryOnFailure?: string | number | null;
+    timeoutMinutes?: string | number | null;
+    taskEnv?: string | null;
     // For get_task_log
     runLogId?: number;
     // For snooze_task
@@ -308,6 +310,31 @@ export async function processTaskIpc(
           retryOnFailureParsed <= 5
             ? Math.floor(retryOnFailureParsed)
             : 0;
+        const timeoutMinutesRaw = data.timeoutMinutes;
+        const timeoutMinutesParsed =
+          timeoutMinutesRaw != null ? Number(timeoutMinutesRaw) : NaN;
+        const timeoutMinutes =
+          !isNaN(timeoutMinutesParsed) && timeoutMinutesParsed > 0
+            ? Math.floor(timeoutMinutesParsed)
+            : null;
+
+        // Validate task_env JSON if provided
+        let taskEnv: string | null = null;
+        if (data.taskEnv) {
+          try {
+            const parsed = JSON.parse(data.taskEnv);
+            if (
+              typeof parsed === 'object' &&
+              parsed !== null &&
+              !Array.isArray(parsed)
+            ) {
+              taskEnv = data.taskEnv;
+            }
+          } catch {
+            logger.warn({ taskId }, 'Invalid task_env JSON — ignoring');
+          }
+        }
+
         createTask({
           id: taskId,
           name: data.taskName || null,
@@ -327,6 +354,8 @@ export async function processTaskIpc(
           run_count: 0,
           retry_on_failure: retryOnFailure,
           retry_attempt: 0,
+          timeout_minutes: timeoutMinutes,
+          task_env: taskEnv,
         });
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
@@ -443,6 +472,41 @@ export async function processTaskIpc(
             const parsed = Math.floor(Number(data.retryOnFailure));
             updates.retry_on_failure =
               !isNaN(parsed) && parsed > 0 && parsed <= 5 ? parsed : 0;
+          }
+        }
+        if (data.timeoutMinutes !== undefined) {
+          // Empty string / null means "clear the timeout (use global default)"
+          if (
+            data.timeoutMinutes === '' ||
+            data.timeoutMinutes === null
+          ) {
+            updates.timeout_minutes = null;
+          } else {
+            const parsed = Math.floor(Number(data.timeoutMinutes));
+            updates.timeout_minutes =
+              !isNaN(parsed) && parsed > 0 ? parsed : null;
+          }
+        }
+        if (data.taskEnv !== undefined) {
+          // Empty string / null means "clear env vars"
+          if (!data.taskEnv) {
+            updates.task_env = null;
+          } else {
+            try {
+              const parsed = JSON.parse(data.taskEnv);
+              if (
+                typeof parsed === 'object' &&
+                parsed !== null &&
+                !Array.isArray(parsed)
+              ) {
+                updates.task_env = data.taskEnv;
+              }
+            } catch {
+              logger.warn(
+                { taskId: data.taskId },
+                'Invalid task_env JSON in update — ignoring',
+              );
+            }
           }
         }
 

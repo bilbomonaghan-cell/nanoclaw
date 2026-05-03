@@ -205,6 +205,20 @@ echo "$prs"
       .describe(
         'Number of automatic retries if the task fails (0–5, default 0 = disabled). On failure the task retries with backoff: 60s → 5min → 30min. A retry notification is sent to chat on each retry attempt. The failure notification is only sent after all retries are exhausted.',
       ),
+    timeout_minutes: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe(
+        'Per-task container timeout in minutes. Overrides the global container timeout for this task. Use for long-running tasks (e.g. 30 for a 30-minute crawl) or short ones where you want a tighter kill switch. Omit to use the global default (usually 5 minutes).',
+      ),
+    env: z
+      .record(z.string())
+      .optional()
+      .describe(
+        'Extra environment variables to inject into the task container (e.g. {"API_KEY": "...", "TARGET_URL": "..."}). Useful for parameterizing tasks without hardcoding values in the prompt. Keys must be valid env var names (letters, digits, underscores; must not start with a digit). Values are plain strings.',
+      ),
   },
   async (args) => {
     // Validate schedule_value before writing IPC
@@ -263,6 +277,10 @@ echo "$prs"
     if (args.max_runs != null) data.maxRuns = String(args.max_runs);
     if (args.retry_on_failure != null && args.retry_on_failure > 0)
       data.retryOnFailure = String(args.retry_on_failure);
+    if (args.timeout_minutes != null)
+      data.timeoutMinutes = String(args.timeout_minutes);
+    if (args.env && Object.keys(args.env).length > 0)
+      data.taskEnv = JSON.stringify(args.env);
 
     writeIpcFile(TASKS_DIR, data);
 
@@ -362,6 +380,19 @@ server.tool(
       const retryInfo = (task.retry_on_failure ?? 0) > 0
         ? `${task.retry_on_failure} (currently at attempt ${task.retry_attempt ?? 0}/${task.retry_on_failure})`
         : 'disabled';
+      const timeoutInfo = task.timeout_minutes != null
+        ? `${task.timeout_minutes} min (per-task override)`
+        : 'global default';
+      const envInfo = (() => {
+        if (!task.task_env) return 'none';
+        try {
+          const envObj = JSON.parse(task.task_env as string) as Record<string, unknown>;
+          const keys = Object.keys(envObj);
+          return keys.length > 0 ? keys.join(', ') : 'none';
+        } catch {
+          return 'invalid JSON';
+        }
+      })();
 
       const lines: string[] = [
         `**Task: ${task.id}**`,
@@ -372,6 +403,8 @@ server.tool(
         `Notify on success: ${task.notify_on_success ? 'yes' : 'no'}`,
         `Retry on failure: ${retryInfo}`,
         `Runs: ${runsInfo}`,
+        `Timeout: ${timeoutInfo}`,
+        `Env vars: ${envInfo}`,
         `Next run: ${task.next_run || 'N/A'}`,
         `Last run: ${task.last_run || 'never'}`,
         `Created: ${task.created_at || 'unknown'}`,
@@ -861,6 +894,8 @@ server.tool(
     notify_on_success: z.boolean().optional().describe('Enable or disable success notifications for this task'),
     max_runs: z.number().int().positive().nullable().optional().describe('Auto-cancel after N successful runs. Pass null to remove an existing limit.'),
     retry_on_failure: z.number().int().min(0).max(5).nullable().optional().describe('Auto-retry count on failure (0–5). Pass 0 or null to disable retries.'),
+    timeout_minutes: z.number().int().positive().nullable().optional().describe('Per-task timeout in minutes. Pass null to revert to the global default.'),
+    env: z.record(z.string()).nullable().optional().describe('Extra env vars for the task container. Pass null or {} to clear all existing env vars.'),
   },
   async (args) => {
     // Validate schedule_value if provided
@@ -905,6 +940,10 @@ server.tool(
       data.maxRuns = args.max_runs != null ? String(args.max_runs) : '';  // empty string signals "clear limit"
     if (args.retry_on_failure !== undefined)
       data.retryOnFailure = args.retry_on_failure != null ? String(args.retry_on_failure) : '';  // empty/0 disables
+    if (args.timeout_minutes !== undefined)
+      data.timeoutMinutes = args.timeout_minutes != null ? String(args.timeout_minutes) : '';  // empty string clears
+    if (args.env !== undefined)
+      data.taskEnv = args.env != null && Object.keys(args.env).length > 0 ? JSON.stringify(args.env) : '';  // empty string clears
 
     writeIpcFile(TASKS_DIR, data);
 

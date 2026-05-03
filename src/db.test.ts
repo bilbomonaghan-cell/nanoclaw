@@ -1573,3 +1573,107 @@ describe('setRetryAttempt and retry_on_failure', () => {
     expect(task.retry_attempt ?? 0).toBe(0);
   });
 });
+
+// --- timeout_minutes ---
+
+describe('timeout_minutes', () => {
+  function makeTimeoutTask(id: string, timeout_minutes: number | null = null) {
+    createTask({
+      id,
+      group_folder: 'timeout-group',
+      chat_jid: 'timeout@g.us',
+      prompt: 'test',
+      schedule_type: 'cron',
+      schedule_value: '0 * * * *',
+      next_run: null,
+      status: 'active',
+      created_at: new Date().toISOString(),
+      name: null,
+      script: null,
+      context_mode: 'isolated',
+      notify_on_success: null,
+      max_runs: null,
+      run_count: 0,
+      timeout_minutes,
+    });
+  }
+
+  it('stores timeout_minutes on creation and retrieves it', () => {
+    makeTimeoutTask('tm-1', 30);
+    const task = getTaskById('tm-1')!;
+    expect(task.timeout_minutes).toBe(30);
+  });
+
+  it('defaults to null when not specified', () => {
+    makeTimeoutTask('tm-2');
+    const task = getTaskById('tm-2')!;
+    expect(task.timeout_minutes ?? null).toBeNull();
+  });
+
+  it('updateTask can set a timeout', () => {
+    makeTimeoutTask('tm-3');
+    updateTask('tm-3', { timeout_minutes: 15 });
+    expect(getTaskById('tm-3')!.timeout_minutes).toBe(15);
+  });
+
+  it('updateTask can clear the timeout (set to null)', () => {
+    makeTimeoutTask('tm-4', 10);
+    updateTask('tm-4', { timeout_minutes: null });
+    expect(getTaskById('tm-4')!.timeout_minutes ?? null).toBeNull();
+  });
+});
+
+// --- task_env ---
+
+describe('task_env', () => {
+  function makeEnvTask(id: string, task_env: string | null = null) {
+    createTask({
+      id,
+      group_folder: 'env-group',
+      chat_jid: 'env@g.us',
+      prompt: 'test',
+      schedule_type: 'cron',
+      schedule_value: '0 * * * *',
+      next_run: null,
+      status: 'active',
+      created_at: new Date().toISOString(),
+      name: null,
+      script: null,
+      context_mode: 'isolated',
+      notify_on_success: null,
+      max_runs: null,
+      run_count: 0,
+      task_env,
+    });
+  }
+
+  it('stores task_env JSON on creation and retrieves it', () => {
+    const envJson = JSON.stringify({ API_KEY: 'secret', TARGET: 'prod' });
+    makeEnvTask('te-1', envJson);
+    const task = getTaskById('te-1')!;
+    expect(task.task_env).toBe(envJson);
+    const parsed = JSON.parse(task.task_env!) as Record<string, string>;
+    expect(parsed.API_KEY).toBe('secret');
+    expect(parsed.TARGET).toBe('prod');
+  });
+
+  it('defaults to null when not specified', () => {
+    makeEnvTask('te-2');
+    const task = getTaskById('te-2')!;
+    expect(task.task_env ?? null).toBeNull();
+  });
+
+  it('updateTask can set task_env', () => {
+    makeEnvTask('te-3');
+    updateTask('te-3', { task_env: JSON.stringify({ FOO: 'bar' }) });
+    const task = getTaskById('te-3')!;
+    const parsed = JSON.parse(task.task_env!) as Record<string, string>;
+    expect(parsed.FOO).toBe('bar');
+  });
+
+  it('updateTask can clear task_env (set to null)', () => {
+    makeEnvTask('te-4', JSON.stringify({ KEY: 'val' }));
+    updateTask('te-4', { task_env: null });
+    expect(getTaskById('te-4')!.task_env ?? null).toBeNull();
+  });
+});

@@ -46,6 +46,10 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  /** Per-task timeout override in milliseconds. If set, replaces group.containerConfig.timeout and CONTAINER_TIMEOUT for this run. */
+  timeoutOverrideMs?: number;
+  /** Extra environment variables to inject into the container for this run. */
+  extraEnv?: Record<string, string>;
 }
 
 export interface ContainerOutput {
@@ -233,6 +237,7 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  extraEnv?: Record<string, string>,
 ): string[] {
   const args: string[] = [
     'run',
@@ -316,6 +321,16 @@ function buildContainerArgs(
     args.push('-e', 'HOME=/home/node');
   }
 
+  // Inject per-task extra env vars (task_env field — set via schedule_task/update_task)
+  if (extraEnv) {
+    for (const [key, value] of Object.entries(extraEnv)) {
+      // Sanitize key to avoid injection: must be a valid env var name
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        args.push('-e', `${key}=${value}`);
+      }
+    }
+  }
+
   for (const mount of mounts) {
     if (mount.readonly) {
       args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
@@ -343,7 +358,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, input.extraEnv);
 
   logger.debug(
     {
@@ -472,7 +487,11 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
-    const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
+    // Per-task timeout takes priority, then group containerConfig, then global default
+    const configTimeout =
+      input.timeoutOverrideMs ||
+      group.containerConfig?.timeout ||
+      CONTAINER_TIMEOUT;
     // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
     // graceful _close sentinel has time to trigger before the hard kill fires.
     const timeoutMs = Math.max(configTimeout, IDLE_TIMEOUT + 30_000);
@@ -731,6 +750,10 @@ export interface TaskSnapshot {
   run_count?: number;
   retry_on_failure?: number | null;
   retry_attempt?: number;
+  /** Per-task container timeout in minutes (null = use global default). */
+  timeout_minutes?: number | null;
+  /** JSON-encoded key-value map of extra env vars for the task container. */
+  task_env?: string | null;
   recent_runs?: Array<{
     id?: number;
     run_at: string;

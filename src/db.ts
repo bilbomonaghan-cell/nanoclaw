@@ -213,6 +213,24 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add timeout_minutes column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN timeout_minutes INTEGER DEFAULT NULL`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add task_env column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN task_env TEXT DEFAULT NULL`,
+    );
+  } catch {
+    /* column already exists */
+  }
 }
 
 export function initDatabase(): void {
@@ -462,8 +480,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, name, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success, max_runs, run_count, retry_on_failure, retry_attempt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, name, group_folder, chat_jid, prompt, script, schedule_type, schedule_value, context_mode, next_run, status, created_at, notify_on_success, max_runs, run_count, retry_on_failure, retry_attempt, timeout_minutes, task_env)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -483,6 +501,8 @@ export function createTask(
     task.run_count ?? 0,
     task.retry_on_failure ?? 0,
     task.retry_attempt ?? 0,
+    task.timeout_minutes ?? null,
+    task.task_env ?? null,
   );
 }
 
@@ -522,6 +542,8 @@ export function updateTask(
       | 'notify_on_success'
       | 'max_runs'
       | 'retry_on_failure'
+      | 'timeout_minutes'
+      | 'task_env'
     >
   >,
 ): void {
@@ -571,6 +593,14 @@ export function updateTask(
   if (updates.retry_on_failure !== undefined) {
     fields.push('retry_on_failure = ?');
     values.push(updates.retry_on_failure ?? 0);
+  }
+  if (updates.timeout_minutes !== undefined) {
+    fields.push('timeout_minutes = ?');
+    values.push(updates.timeout_minutes ?? null);
+  }
+  if (updates.task_env !== undefined) {
+    fields.push('task_env = ?');
+    values.push(updates.task_env ?? null);
   }
 
   if (fields.length === 0) return;

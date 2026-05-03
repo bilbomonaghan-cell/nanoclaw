@@ -81,6 +81,10 @@ export interface ScheduledTask {
   retry_on_failure?: number | null;
   /** Current consecutive failure attempt counter (reset to 0 after any success). */
   retry_attempt?: number;
+  /** Per-task container timeout in minutes. Overrides the global CONTAINER_TIMEOUT for this task. null = use global default. */
+  timeout_minutes?: number | null;
+  /** JSON-encoded key-value map of extra environment variables to inject into the task container. null = no extra env. */
+  task_env?: string | null;
 }
 
 export interface TaskRunLog {

@@ -235,6 +235,8 @@ async function runTask(
       run_count: t.run_count ?? 0,
       retry_on_failure: t.retry_on_failure ?? 0,
       retry_attempt: t.retry_attempt ?? 0,
+      timeout_minutes: t.timeout_minutes ?? null,
+      task_env: t.task_env ?? null,
       recent_runs: getRecentTaskRunLogs(t.id, 5).map((r) => ({
         id: r.id,
         run_at: r.run_at,
@@ -304,6 +306,16 @@ async function runTask(
   };
 
   try {
+    // Parse per-task env vars (stored as JSON string)
+    let taskExtraEnv: Record<string, string> | undefined;
+    if (task.task_env) {
+      try {
+        taskExtraEnv = JSON.parse(task.task_env) as Record<string, string>;
+      } catch {
+        logger.warn({ taskId: task.id }, 'Failed to parse task_env JSON — ignoring');
+      }
+    }
+
     const output = await runContainerAgent(
       group,
       {
@@ -314,6 +326,10 @@ async function runTask(
         isMain,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
+        timeoutOverrideMs: task.timeout_minutes
+          ? task.timeout_minutes * 60_000
+          : undefined,
+        extraEnv: taskExtraEnv,
       },
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
