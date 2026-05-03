@@ -465,7 +465,11 @@ describe('task retry on failure', () => {
 
     // Should have sent the final failure notification (⚠️) not a retry notice
     const sentMessages = sendMessage.mock.calls.map((c) => c[1] as string);
-    expect(sentMessages.some((m) => m.includes('⚠️') && m.includes('all retries exhausted'))).toBe(true);
+    expect(
+      sentMessages.some(
+        (m) => m.includes('⚠️') && m.includes('all retries exhausted'),
+      ),
+    ).toBe(true);
     expect(sentMessages.some((m) => m.includes('⏱️'))).toBe(false);
   });
 

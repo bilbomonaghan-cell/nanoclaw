@@ -134,8 +134,6 @@ export const BASE_URL = process.env.BASE_URL || '';
 // in .env or host environment to cap container resource usage.
 // Empty string (default) means no limit is applied.
 export const CONTAINER_MEMORY_LIMIT =
-  process.env.CONTAINER_MEMORY_LIMIT ||
-  envConfig.CONTAINER_MEMORY_LIMIT ||
-  '';
+  process.env.CONTAINER_MEMORY_LIMIT || envConfig.CONTAINER_MEMORY_LIMIT || '';
 export const CONTAINER_CPU_LIMIT =
   process.env.CONTAINER_CPU_LIMIT || envConfig.CONTAINER_CPU_LIMIT || '';

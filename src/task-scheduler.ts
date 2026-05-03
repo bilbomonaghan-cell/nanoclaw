@@ -379,7 +379,11 @@ async function runTask(
       const retryAt = new Date(Date.now() + delayMs).toISOString();
 
       setRetryAttempt(task.id, nextAttempt);
-      updateTaskAfterRun(task.id, retryAt, `Retry ${nextAttempt}/${maxRetries}: ${error.slice(0, 100)}`);
+      updateTaskAfterRun(
+        task.id,
+        retryAt,
+        `Retry ${nextAttempt}/${maxRetries}: ${error.slice(0, 100)}`,
+      );
 
       const shortId = task.id.slice(-12);
       const errMsg = error.length > 100 ? error.slice(0, 100) + '…' : error;
