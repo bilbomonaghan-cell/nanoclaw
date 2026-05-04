@@ -1003,6 +1003,7 @@ interface MemoryEntry {
   tags: string[];
   created_at: string;
   updated_at: string;
+  expires_at?: string; // Optional ISO timestamp — entry is hidden after this time
 }
 
 interface MemoryStore {
@@ -1025,17 +1026,27 @@ function writeMemoryStore(store: MemoryStore): void {
   fs.renameSync(tempPath, MEMORY_FILE);
 }
 
+/** Returns true if the entry has an expires_at that is in the past. */
+function isExpired(entry: MemoryEntry): boolean {
+  if (!entry.expires_at) return false;
+  return new Date(entry.expires_at) <= new Date();
+}
+
 server.tool(
   'memory_store',
   `Store or update a structured memory entry. Each memory has a unique key, text content, and optional tags for later retrieval. Use this to remember facts, preferences, notes, or any information that should persist across sessions.
 
+Supports optional TTL via \`expires_at\` (ISO timestamp, local or UTC). Expired entries are hidden from search/list but kept in the file until purged.
+
 Examples:
 - key: "user_prefs", content: "Berfday prefers brief responses and metric units", tags: ["preferences", "user"]
-- key: "project_status", content: "Working on nanoclaw Ollama integration", tags: ["projects", "nanoclaw"]`,
+- key: "project_status", content: "Working on nanoclaw Ollama integration", tags: ["projects", "nanoclaw"]
+- key: "temp_note", content: "Call dentist before Friday", expires_at: "2026-05-09T23:59:00"`,
   {
     key: z.string().describe('Unique identifier for this memory (e.g., "user_prefs", "todo_list")'),
     content: z.string().describe('The text content to store'),
     tags: z.array(z.string()).optional().describe('Optional tags for categorization and search (e.g., ["preferences", "user"])'),
+    expires_at: z.string().optional().describe('Optional ISO timestamp after which this entry is hidden (e.g., "2026-05-09T23:59:00"). Useful for temporary notes or reminders.'),
   },
   async (args) => {
     const store = readMemoryStore();
@@ -1047,19 +1058,22 @@ Examples:
       tags: args.tags || [],
       created_at: existing?.created_at || now,
       updated_at: now,
+      ...(args.expires_at ? { expires_at: args.expires_at } : {}),
     };
 
     writeMemoryStore(store);
-    return { content: [{ type: 'text' as const, text: `Memory "${args.key}" stored (${Object.keys(store.memories).length} total entries).` }] };
+    const expStr = args.expires_at ? ` (expires ${args.expires_at.slice(0, 10)})` : '';
+    return { content: [{ type: 'text' as const, text: `Memory "${args.key}" stored${expStr} (${Object.keys(store.memories).length} total entries).` }] };
   },
 );
 
 server.tool(
   'memory_search',
-  'Search stored memories by content substring and/or tags. Returns all matching entries.',
+  'Search stored memories by content substring and/or tags. Returns all matching entries. Expired entries are excluded unless include_expired is set.',
   {
     query: z.string().optional().describe('Case-insensitive substring to search in memory content'),
     tags: z.array(z.string()).optional().describe('Filter to memories that have ALL of these tags'),
+    include_expired: z.boolean().optional().describe('Include entries past their expires_at date (default: false)'),
   },
   async (args) => {
     const store = readMemoryStore();
@@ -1070,6 +1084,7 @@ server.tool(
     }
 
     const results = entries.filter(([, entry]) => {
+      if (!args.include_expired && isExpired(entry)) return false;
       if (args.query && !entry.content.toLowerCase().includes(args.query.toLowerCase())) return false;
       if (args.tags && args.tags.length > 0) {
         if (!args.tags.every(t => entry.tags.includes(t))) return false;
@@ -1081,9 +1096,10 @@ server.tool(
       return { content: [{ type: 'text' as const, text: 'No memories match that search.' }] };
     }
 
-    const formatted = results.map(([key, entry]) =>
-      `**${key}** [${entry.tags.join(', ') || 'no tags'}]\n${entry.content}\n_(updated: ${entry.updated_at.slice(0, 10)})_`
-    ).join('\n\n');
+    const formatted = results.map(([key, entry]) => {
+      const expStr = entry.expires_at ? ` ⏰ expires ${entry.expires_at.slice(0, 10)}` : '';
+      return `**${key}** [${entry.tags.join(', ') || 'no tags'}]${expStr}\n${entry.content}\n_(updated: ${entry.updated_at.slice(0, 10)})_`;
+    }).join('\n\n');
 
     return { content: [{ type: 'text' as const, text: `Found ${results.length} memor${results.length === 1 ? 'y' : 'ies'}:\n\n${formatted}` }] };
   },
@@ -1091,33 +1107,44 @@ server.tool(
 
 server.tool(
   'memory_list',
-  'List all stored memory keys with their tags and a content preview.',
+  'List all stored memory keys with their tags and a content preview. Expired entries are excluded unless include_expired is set.',
   {
     tags: z.array(z.string()).optional().describe('Optional: filter to memories that have ALL of these tags'),
+    include_expired: z.boolean().optional().describe('Include entries past their expires_at date (default: false)'),
   },
   async (args) => {
     const store = readMemoryStore();
-    const entries = Object.entries(store.memories);
+    const allEntries = Object.entries(store.memories);
 
-    if (entries.length === 0) {
+    if (allEntries.length === 0) {
       return { content: [{ type: 'text' as const, text: 'No memories stored yet.' }] };
     }
+
+    const entries = args.include_expired
+      ? allEntries
+      : allEntries.filter(([, e]) => !isExpired(e));
 
     const filtered = args.tags && args.tags.length > 0
       ? entries.filter(([, e]) => args.tags!.every(t => e.tags.includes(t)))
       : entries;
 
     if (filtered.length === 0) {
-      return { content: [{ type: 'text' as const, text: 'No memories match those tags.' }] };
+      const expiredCount = allEntries.length - entries.length;
+      const hint = expiredCount > 0 ? ` (${expiredCount} expired entr${expiredCount === 1 ? 'y' : 'ies'} hidden — use include_expired: true to show)` : '';
+      return { content: [{ type: 'text' as const, text: `No memories match those filters.${hint}` }] };
     }
+
+    const expiredCount = allEntries.length - entries.length;
+    const expiredNote = expiredCount > 0 ? ` (${expiredCount} expired hidden)` : '';
 
     const lines = filtered.map(([key, entry]) => {
       const preview = entry.content.length > 80 ? entry.content.slice(0, 80) + '…' : entry.content;
       const tagsStr = entry.tags.length > 0 ? ` [${entry.tags.join(', ')}]` : '';
-      return `• **${key}**${tagsStr}: ${preview}`;
+      const expStr = entry.expires_at ? ` ⏰${entry.expires_at.slice(0, 10)}` : '';
+      return `• **${key}**${tagsStr}${expStr}: ${preview}`;
     });
 
-    return { content: [{ type: 'text' as const, text: `${filtered.length} memor${filtered.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n')}` }] };
+    return { content: [{ type: 'text' as const, text: `${filtered.length} memor${filtered.length === 1 ? 'y' : 'ies'}${expiredNote}:\n\n${lines.join('\n')}` }] };
   },
 );
 
@@ -1141,6 +1168,38 @@ server.tool(
 );
 
 server.tool(
+  'memory_purge_expired',
+  'Delete all memory entries that have passed their expires_at date. Returns the count of entries removed. Safe to run at any time — only removes truly expired entries.',
+  {},
+  async () => {
+    const store = readMemoryStore();
+    const now = new Date();
+    let purged = 0;
+    const purgedKeys: string[] = [];
+
+    for (const [key, entry] of Object.entries(store.memories)) {
+      if (entry.expires_at && new Date(entry.expires_at) <= now) {
+        delete store.memories[key];
+        purged++;
+        purgedKeys.push(key);
+      }
+    }
+
+    if (purged === 0) {
+      return { content: [{ type: 'text' as const, text: 'No expired entries found — memory store is clean.' }] };
+    }
+
+    writeMemoryStore(store);
+    return {
+      content: [{
+        type: 'text' as const,
+        text: `Purged ${purged} expired entr${purged === 1 ? 'y' : 'ies'}: ${purgedKeys.join(', ')}\n${Object.keys(store.memories).length} entries remain.`,
+      }],
+    };
+  },
+);
+
+server.tool(
   'memory_append',
   `Append a line of text to an existing memory entry. Useful for list-style memories (todo lists, logs, running notes) where you want to add an item without rewriting the whole entry.
 
@@ -1153,6 +1212,7 @@ Examples:
     key: z.string().describe('The memory key to append to'),
     text: z.string().describe('Text to append as a new line'),
     tags: z.array(z.string()).optional().describe('Tags to set if creating a new entry (ignored on existing entries)'),
+    expires_at: z.string().optional().describe('Expiry timestamp (ISO) — only applied when creating a new entry; ignored on existing entries'),
   },
   async (args) => {
     const store = readMemoryStore();
@@ -1171,6 +1231,7 @@ Examples:
         tags: args.tags || [],
         created_at: now,
         updated_at: now,
+        ...(args.expires_at ? { expires_at: args.expires_at } : {}),
       };
     }
 
@@ -2774,7 +2835,7 @@ server.tool(
   `Show aggregate statistics about this group's memory store.
 Useful for understanding what's been remembered, how much space is used, and which tags are in use.
 
-Returns: entry count, unique tags with counts, oldest/newest entry timestamps, and total content size.`,
+Returns: entry count (active + expired), unique tags with counts, oldest/newest entry timestamps, and total content size.`,
   {},
   async () => {
     try {
@@ -2792,7 +2853,7 @@ Returns: entry count, unique tags with counts, oldest/newest entry timestamps, a
       const raw = fs.readFileSync(MEMORY_FILE, 'utf-8');
       const store = JSON.parse(raw) as Record<
         string,
-        { content: string; tags: string[]; updated_at: string }
+        { content: string; tags: string[]; updated_at: string; expires_at?: string }
       >;
 
       const keys = Object.keys(store);
@@ -2812,9 +2873,12 @@ Returns: entry count, unique tags with counts, oldest/newest entry timestamps, a
       let oldest: string | null = null;
       let newest: string | null = null;
       const tagCounts: Record<string, number> = {};
+      let expiredCount = 0;
 
       for (const key of keys) {
         const entry = store[key];
+        const expired = entry.expires_at && new Date(entry.expires_at) <= new Date();
+        if (expired) { expiredCount++; continue; } // skip expired in tag/size stats
         totalChars += entry.content.length;
         for (const tag of entry.tags ?? []) {
           tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
@@ -2826,13 +2890,14 @@ Returns: entry count, unique tags with counts, oldest/newest entry timestamps, a
         }
       }
 
+      const activeCount = keys.length - expiredCount;
       const sortedTags = Object.entries(tagCounts)
         .sort((a, b) => b[1] - a[1])
         .map(([tag, count]) => `  • ${tag} (${count})`);
 
       const lines: string[] = [
         `**Memory store stats**`,
-        `Entries: ${keys.length}`,
+        `Entries: ${activeCount} active${expiredCount > 0 ? ` + ${expiredCount} expired (use memory_purge_expired to clean up)` : ''}`,
         `Total content: ${totalChars.toLocaleString()} chars`,
         `Oldest entry: ${oldest ? oldest.slice(0, 16).replace('T', ' ') : 'unknown'}`,
         `Newest entry: ${newest ? newest.slice(0, 16).replace('T', ' ') : 'unknown'}`,
@@ -2845,16 +2910,18 @@ Returns: entry count, unique tags with counts, oldest/newest entry timestamps, a
         lines.push(`Tags: none`);
       }
 
-      lines.push(``, `**All keys:**`);
+      lines.push(``, `**All keys (active):**`);
       for (const key of keys.sort()) {
         const entry = store[key];
+        if (entry.expires_at && new Date(entry.expires_at) <= new Date()) continue; // skip expired
         const preview =
           entry.content.length > 60
             ? entry.content.slice(0, 60) + '…'
             : entry.content;
         const tagStr =
           entry.tags && entry.tags.length > 0 ? ` [${entry.tags.join(', ')}]` : '';
-        lines.push(`  • ${key}${tagStr}: ${preview}`);
+        const expStr = entry.expires_at ? ` ⏰${entry.expires_at.slice(0, 10)}` : '';
+        lines.push(`  • ${key}${tagStr}${expStr}: ${preview}`);
       }
 
       return {
@@ -2870,6 +2937,153 @@ Returns: entry count, unique tags with counts, oldest/newest entry timestamps, a
         ],
       };
     }
+  },
+);
+
+// ─── get_group_briefing ────────────────────────────────────────────────────────
+
+server.tool(
+  'get_group_briefing',
+  `Get a concise briefing of this group's current state: identity, active scheduled tasks (with last run info), and a summary of stored memories.
+
+Useful at the start of a session or when resuming work to quickly orient yourself without making multiple separate tool calls.`,
+  {
+    memory_tags: z.array(z.string()).optional().describe('Optional: only show memory entries with ALL these tags (default: show all active entries)'),
+    max_tasks: z.number().int().min(1).max(20).optional().describe('Max tasks to show (default: 10)'),
+    max_memories: z.number().int().min(1).max(50).optional().describe('Max memory entries to show (default: 15)'),
+  },
+  async (args) => {
+    const lines: string[] = [];
+    const now = new Date();
+
+    // ── Group identity ────────────────────────────────────────────────────
+    const groupFolder = process.env.NANOCLAW_GROUP_FOLDER || 'unknown';
+    const groupJid = process.env.NANOCLAW_CHAT_JID || '';
+    const isMainGroup = process.env.NANOCLAW_IS_MAIN === 'true';
+
+    let groupName = groupFolder;
+    try {
+      const regPath = '/workspace/ipc/registered_groups.json';
+      if (fs.existsSync(regPath)) {
+        const reg = JSON.parse(fs.readFileSync(regPath, 'utf-8')) as Record<
+          string,
+          { name: string; folder: string; trigger: string; isMain?: boolean }
+        >;
+        const entry = Object.values(reg).find((g) => g.folder === groupFolder);
+        if (entry) groupName = entry.name;
+      }
+    } catch { /* ignore */ }
+
+    lines.push(`# Group Briefing: ${groupName}`);
+    lines.push(`📅 ${now.toISOString().slice(0, 16).replace('T', ' ')} UTC`);
+    lines.push('');
+    lines.push(`**Group:** ${groupName} | Folder: ${groupFolder}${isMainGroup ? ' ⭐ (main)' : ''}`);
+    if (groupJid) lines.push(`**JID:** ${groupJid}`);
+    lines.push('');
+
+    // ── Scheduled tasks ───────────────────────────────────────────────────
+    const maxTasks = args.max_tasks ?? 10;
+    try {
+      const tasksPath = '/workspace/ipc/current_tasks.json';
+      if (fs.existsSync(tasksPath)) {
+        const allTasks = JSON.parse(fs.readFileSync(tasksPath, 'utf-8')) as Array<{
+          id: string;
+          name?: string | null;
+          prompt: string;
+          schedule_type: string;
+          schedule_value: string;
+          status: string;
+          next_run?: string | null;
+          last_run?: string | null;
+          group_folder: string;
+          recent_runs?: Array<{ status: string; started_at: string; duration_ms: number; error?: string | null }>;
+        }>;
+
+        const myTasks = isMainGroup
+          ? allTasks
+          : allTasks.filter((t) => t.group_folder === groupFolder);
+
+        const activeTasks = myTasks.filter((t) => t.status === 'active');
+        const pausedTasks = myTasks.filter((t) => t.status === 'paused');
+
+        lines.push(`## Scheduled Tasks (${activeTasks.length} active${pausedTasks.length > 0 ? `, ${pausedTasks.length} paused` : ''})`);
+
+        if (activeTasks.length === 0 && pausedTasks.length === 0) {
+          lines.push('_No tasks scheduled._');
+        } else {
+          const showTasks = activeTasks.slice(0, maxTasks);
+          for (const t of showTasks) {
+            const label = t.name ? `**${t.name}**` : `[${t.id.slice(-8)}]`;
+            const schedule = `${t.schedule_type} \`${t.schedule_value}\``;
+            const nextStr = t.next_run
+              ? `next: ${t.next_run.slice(0, 16).replace('T', ' ')}`
+              : 'next: unknown';
+
+            let lastStr = '';
+            const lastRun = t.recent_runs?.[0];
+            if (lastRun) {
+              const icon = lastRun.status === 'success' ? '✅' : '❌';
+              const dur = lastRun.duration_ms > 0 ? `${Math.round(lastRun.duration_ms / 1000)}s` : '';
+              lastStr = ` | last: ${icon} ${lastRun.started_at.slice(0, 16).replace('T', ' ')}${dur ? ' ' + dur : ''}`;
+            }
+
+            const promptPreview = t.prompt.length > 60 ? t.prompt.slice(0, 60) + '…' : t.prompt;
+            lines.push(`- ${label} — ${schedule}, ${nextStr}${lastStr}`);
+            lines.push(`  _${promptPreview}_`);
+          }
+          if (activeTasks.length > maxTasks) {
+            lines.push(`  _…and ${activeTasks.length - maxTasks} more active tasks_`);
+          }
+          if (pausedTasks.length > 0) {
+            lines.push(`\n_Paused: ${pausedTasks.slice(0, 3).map((t) => t.name || t.id.slice(-8)).join(', ')}${pausedTasks.length > 3 ? ' +' + (pausedTasks.length - 3) + ' more' : ''}_`);
+          }
+        }
+      } else {
+        lines.push(`## Tasks`);
+        lines.push('_Task snapshot not available._');
+      }
+    } catch { /* ignore task errors */ }
+
+    lines.push('');
+
+    // ── Memory summary ────────────────────────────────────────────────────
+    const maxMems = args.max_memories ?? 15;
+    try {
+      if (fs.existsSync(MEMORY_FILE)) {
+        const store = readMemoryStore();
+        const allEntries = Object.entries(store.memories);
+        const activeEntries = allEntries.filter(([, e]) => !isExpired(e));
+        const filtered = args.memory_tags && args.memory_tags.length > 0
+          ? activeEntries.filter(([, e]) => args.memory_tags!.every((t) => e.tags.includes(t)))
+          : activeEntries;
+
+        const expiredCount = allEntries.length - activeEntries.length;
+        const expiredNote = expiredCount > 0 ? ` (${expiredCount} expired)` : '';
+
+        lines.push(`## Memory (${filtered.length} entr${filtered.length === 1 ? 'y' : 'ies'}${expiredNote})`);
+
+        if (filtered.length === 0) {
+          lines.push('_No memory entries._');
+        } else {
+          // Sort newest-first
+          const sorted = filtered.sort(([, a], [, b]) => b.updated_at.localeCompare(a.updated_at));
+          for (const [key, entry] of sorted.slice(0, maxMems)) {
+            const preview = entry.content.length > 100 ? entry.content.slice(0, 100) + '…' : entry.content;
+            const tagsStr = entry.tags.length > 0 ? ` [${entry.tags.join(', ')}]` : '';
+            const expStr = entry.expires_at ? ` ⏰${entry.expires_at.slice(0, 10)}` : '';
+            lines.push(`- **${key}**${tagsStr}${expStr}: ${preview}`);
+          }
+          if (filtered.length > maxMems) {
+            lines.push(`_…and ${filtered.length - maxMems} more — use memory_list to see all_`);
+          }
+        }
+      } else {
+        lines.push(`## Memory`);
+        lines.push('_No memory stored yet._');
+      }
+    } catch { /* ignore memory errors */ }
+
+    return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
   },
 );
 

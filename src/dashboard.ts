@@ -9,8 +9,17 @@ import { execSync } from 'child_process';
 import http from 'http';
 import os from 'os';
 
-import { CREDENTIAL_PROXY_PORT, SCOUT_MCP_URL } from './config.js';
-import { getAllRegisteredGroups, getAllTasks } from './db.js';
+import {
+  CREDENTIAL_PROXY_PORT,
+  SCOUT_MCP_URL,
+  WEBHOOK_TOKEN,
+} from './config.js';
+import {
+  getAllRegisteredGroups,
+  getAllTasks,
+  getTaskById,
+  updateTask,
+} from './db.js';
 import { logger } from './logger.js';
 
 // ─── Data gathering helpers ────────────────────────────────────────────────
@@ -358,9 +367,20 @@ setInterval(refresh,30000);
 
 // ─── HTTP server ───────────────────────────────────────────────────────────
 
+/** Extract bearer token from Authorization header or ?token= query param. */
+function extractToken(req: http.IncomingMessage): string | null {
+  const auth = req.headers['authorization'];
+  if (auth && auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim();
+  }
+  const urlObj = new URL(req.url ?? '/', `http://localhost`);
+  return urlObj.searchParams.get('token');
+}
+
 export function startDashboard(port: number): http.Server {
   const server = http.createServer(async (req, res) => {
-    const url = req.url ?? '/';
+    const urlObj = new URL(req.url ?? '/', `http://localhost`);
+    const url = urlObj.pathname;
 
     if (url === '/api/status' || url === '/api/status/') {
       try {
@@ -372,6 +392,85 @@ export function startDashboard(port: number): http.Server {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Internal error' }));
       }
+      return;
+    }
+
+    // ── Webhook endpoints ──────────────────────────────────────────────────
+    // POST /webhook/task/:taskId  — trigger a task to run immediately
+    // GET  /webhook/tasks         — list tasks available for triggering
+    const webhookTaskMatch = url.match(/^\/webhook\/task\/([^/]+)$/);
+    if (webhookTaskMatch && req.method === 'POST') {
+      // Auth check
+      if (!WEBHOOK_TOKEN) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: 'Webhook not enabled (WEBHOOK_TOKEN not configured)',
+          }),
+        );
+        return;
+      }
+      const token = extractToken(req);
+      if (!token || token !== WEBHOOK_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid or missing token' }));
+        return;
+      }
+
+      const taskId = webhookTaskMatch[1];
+      const task = getTaskById(taskId);
+      if (!task) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Task not found: ${taskId}` }));
+        return;
+      }
+
+      const nextRun = new Date().toISOString();
+      updateTask(taskId, { status: 'active', next_run: nextRun });
+      logger.info({ taskId }, 'Task triggered via webhook');
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          taskId,
+          name: task.name ?? null,
+          nextRun,
+          message: `Task ${task.name || taskId} scheduled for immediate execution`,
+        }),
+      );
+      return;
+    }
+
+    if (url === '/webhook/tasks' && req.method === 'GET') {
+      if (!WEBHOOK_TOKEN) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: 'Webhook not enabled (WEBHOOK_TOKEN not configured)',
+          }),
+        );
+        return;
+      }
+      const token = extractToken(req);
+      if (!token || token !== WEBHOOK_TOKEN) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid or missing token' }));
+        return;
+      }
+
+      const tasks = getAllTasks().map((t) => ({
+        id: t.id,
+        name: t.name ?? null,
+        group_folder: t.group_folder,
+        status: t.status,
+        schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value,
+        next_run: t.next_run ?? null,
+        endpoint: `/webhook/task/${t.id}`,
+      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ tasks }));
       return;
     }
 

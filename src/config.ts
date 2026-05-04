@@ -16,6 +16,7 @@ const envConfig = readEnvFile([
   'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
   'CONTAINER_MEMORY_LIMIT',
   'CONTAINER_CPU_LIMIT',
+  'WEBHOOK_TOKEN',
 ]);
 
 export const ASSISTANT_NAME =
@@ -137,3 +138,9 @@ export const CONTAINER_MEMORY_LIMIT =
   process.env.CONTAINER_MEMORY_LIMIT || envConfig.CONTAINER_MEMORY_LIMIT || '';
 export const CONTAINER_CPU_LIMIT =
   process.env.CONTAINER_CPU_LIMIT || envConfig.CONTAINER_CPU_LIMIT || '';
+
+// Webhook token for the dashboard's task-trigger endpoint.
+// Set WEBHOOK_TOKEN in .env or host env to enable POST /webhook/task/:taskId.
+// If unset, webhook endpoints return 403.
+export const WEBHOOK_TOKEN =
+  process.env.WEBHOOK_TOKEN || envConfig.WEBHOOK_TOKEN || '';
