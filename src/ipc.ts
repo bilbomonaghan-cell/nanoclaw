@@ -476,10 +476,7 @@ export async function processTaskIpc(
         }
         if (data.timeoutMinutes !== undefined) {
           // Empty string / null means "clear the timeout (use global default)"
-          if (
-            data.timeoutMinutes === '' ||
-            data.timeoutMinutes === null
-          ) {
+          if (data.timeoutMinutes === '' || data.timeoutMinutes === null) {
             updates.timeout_minutes = null;
           } else {
             const parsed = Math.floor(Number(data.timeoutMinutes));

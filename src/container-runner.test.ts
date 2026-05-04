@@ -249,9 +249,13 @@ describe('container-runner timeout behavior', () => {
   it('rejects invalid env var key names (injection protection)', async () => {
     const inputWithBadEnv = {
       ...testInput,
-      extraEnv: { 'VALID_KEY': 'ok', '123INVALID': 'bad', 'HAS SPACE': 'bad' },
+      extraEnv: { VALID_KEY: 'ok', '123INVALID': 'bad', 'HAS SPACE': 'bad' },
     };
-    const resultPromise = runContainerAgent(testGroup, inputWithBadEnv, () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      inputWithBadEnv,
+      () => {},
+    );
     fakeProc.emit('close', 0);
     await vi.advanceTimersByTimeAsync(10);
     await resultPromise;

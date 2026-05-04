@@ -312,7 +312,10 @@ async function runTask(
       try {
         taskExtraEnv = JSON.parse(task.task_env) as Record<string, string>;
       } catch {
-        logger.warn({ taskId: task.id }, 'Failed to parse task_env JSON — ignoring');
+        logger.warn(
+          { taskId: task.id },
+          'Failed to parse task_env JSON — ignoring',
+        );
       }
     }
 
